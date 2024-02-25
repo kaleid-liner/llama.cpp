@@ -531,7 +531,7 @@ struct test_case {
         ggml_backend_graph_compute(backend, gf);
 
         // duplicate the op
-        size_t target_size = ggml_backend_is_cpu(backend) ? 1ULL << 33 : 1ULL << 35; // 8 GB CPU, 32 GB GPU
+        size_t target_size = ggml_backend_is_cpu(backend) ? 1ULL << 35 : 1ULL << 35; // 8 GB CPU, 32 GB GPU
         int n_runs = std::min((size_t)gf->size - gf->n_nodes, target_size / op_size(out)) + 1;
         for (int i = 1; i < n_runs; i++) {
             gf->nodes[gf->n_nodes++] = out;
@@ -554,6 +554,12 @@ struct test_case {
                 continue;
             }
             mem += tensor_op_size(gf->nodes[i]);
+        }
+
+        // warmup
+        for (int i = 0; i < 100; ++i) {
+            ggml_backend_synchronize(backend);
+            ggml_backend_graph_compute(backend, gf);
         }
 
         // run
@@ -1545,22 +1551,11 @@ static bool test_backend(ggml_backend_t backend, test_mode mode, const char * op
     }
 
     for (ggml_type type_a : all_types) {
-        for (ggml_type type_b : {GGML_TYPE_F32, GGML_TYPE_F16}) {
-            test_cases.emplace_back(new test_mul_mat(type_a, type_b, 16, 1, 256, { 1,  1}, {1, 1}));
-            test_cases.emplace_back(new test_mul_mat(type_a, type_b, 16, 1, 256, {10,  1}, {1, 1}));
-            test_cases.emplace_back(new test_mul_mat(type_a, type_b, 16, 1, 256, {10,  1}, {2, 1}));
-            test_cases.emplace_back(new test_mul_mat(type_a, type_b, 16, 1, 256, {10, 10}, {1, 1}));
-            test_cases.emplace_back(new test_mul_mat(type_a, type_b, 16, 1, 256, {10, 10}, {2, 1}));
-            test_cases.emplace_back(new test_mul_mat(type_a, type_b, 16, 1, 256, {10, 10}, {1, 2}));
-            test_cases.emplace_back(new test_mul_mat(type_a, type_b, 16, 1, 256, {10, 10}, {2, 2}));
-
-            test_cases.emplace_back(new test_mul_mat(type_a, type_b, 16, 16, 256, { 1,  1}, {1, 1}));
-            test_cases.emplace_back(new test_mul_mat(type_a, type_b, 16, 16, 256, {10,  1}, {1, 1}));
-            test_cases.emplace_back(new test_mul_mat(type_a, type_b, 16, 16, 256, {10,  1}, {2, 1}));
-            test_cases.emplace_back(new test_mul_mat(type_a, type_b, 16, 16, 256, {10, 10}, {1, 1}));
-            test_cases.emplace_back(new test_mul_mat(type_a, type_b, 16, 16, 256, {10, 10}, {2, 1}));
-            test_cases.emplace_back(new test_mul_mat(type_a, type_b, 16, 16, 256, {10, 10}, {1, 2}));
-            test_cases.emplace_back(new test_mul_mat(type_a, type_b, 16, 16, 256, {10, 10}, {2, 2}));
+        for (ggml_type type_b : {GGML_TYPE_F32}) {
+            test_cases.emplace_back(new test_mul_mat(type_a, type_b, 12288, 1,  4096, { 1,  1}, {1, 1}));
+            test_cases.emplace_back(new test_mul_mat(type_a, type_b,  4096, 1,  4096, { 1,  1}, {1, 1}));
+            test_cases.emplace_back(new test_mul_mat(type_a, type_b, 11008, 1,  4096, { 1,  1}, {1, 1}));
+            test_cases.emplace_back(new test_mul_mat(type_a, type_b,  4096, 1, 11008, { 1,  1}, {1, 1}));
         }
     }
 
@@ -1639,6 +1634,7 @@ static bool test_backend(ggml_backend_t backend, test_mode mode, const char * op
     }
 
     if (mode == MODE_PERF) {
+        // ggml_backend_cpu_set_n_threads(backend, 16);
         for (auto & test : test_cases) {
             test->eval_perf(backend, op_name);
         }
