@@ -292,6 +292,10 @@ inline static void * ggml_calloc(size_t num, size_t size) {
 #include "ggml-sycl.h"
 #endif
 
+#if defined(GGML_USE_TMAC)
+#include "ggml-tmac.h"
+#endif
+
 // floating point type used to accumulate sums
 typedef double ggml_float;
 
@@ -10280,6 +10284,21 @@ static bool ggml_compute_forward_mul_mat_use_blas(struct ggml_tensor * dst) {
 }
 #endif
 
+#if defined(GGML_USE_TMAC)
+static int get_type_bits(enum ggml_type type) {
+    switch (type) {
+        case GGML_TYPE_Q2_K:
+            return 2;
+        case GGML_TYPE_Q3_K:
+            return 3;
+        case GGML_TYPE_Q4_0:
+            return 4;
+        default:
+            return 0;
+    }
+}
+#endif
+
 static void ggml_compute_forward_mul_mat(
         const struct ggml_compute_params * params,
               struct ggml_tensor * dst) {
@@ -10397,6 +10416,71 @@ static void ggml_compute_forward_mul_mat(
         //printf("cblas_sgemm = %.3f ms, %lld flops\n", (ggml_perf_time_us() - tgemm0)/1000.0, ne13*ne12*ne1*ne01*ne10*2);
 
         //printf("CBLAS = %f ms, %d x %d x %d x %d\n", (ggml_perf_time_us() - t0)/1000.0, ne0, ne1, ne2, ne3);
+
+        return;
+    }
+#endif
+
+#if defined(GGML_USE_TMAC)
+    if (ggml_tmac_can_mul_mat(src0, src1, dst)) {
+        if (params->type == GGML_TASK_FINALIZE) {
+            return;
+        }
+
+        const int lut_scales_size = ggml_get_op_params_i32(dst, 0);
+        const int bits            = get_type_bits(type);
+        // src0: weight,     ne00 = k, ne01 = n
+        // src1: activation, ne10 = k, ne11 = m
+        char * wdata = params->wdata;
+
+        // g = 4
+        int8_t * qlut = wdata;
+        float * lut_scales = (float *)(qlut + ne10 * ne11 * 4);
+        float * lut_biases = (float *)(lut_scales + lut_scales_size);
+        if (params->type == GGML_TASK_INIT) {
+            if (ith != 0) {
+                return;
+            }
+            GGML_ASSERT(src1->type == GGML_TYPE_F32);
+            ggml_tmac_mul_mat_task_init(src1->data, qlut, lut_scales, lut_biases, ne01, ne00, ne11, bits);
+
+            return;
+        }
+
+        const int scales_size      = ggml_get_op_params_i32(dst, 1);
+        const int n_tile_num       = ggml_get_op_params_i32(dst, 2);  // num of bm in T-MAC
+        GGML_ASSERT(ne0 % n_tile_num == 0);
+        const int w_size           = ne00 * ne01 * bits / 8;
+        const int w_tile_size      = w_size / n_tile_num;
+
+        const int th_tile_num = (n_tile_num + nth - 1) / nth;
+        const int th_tile_beg = ith * th_tile_num;
+        const int th_tile_end = MIN((ith + 1) * th_tile_num, n_tile_num);
+
+        uint8_t * w_ptr      = src0->extra;
+        float   * scales_ptr = w_ptr + w_size;
+
+        // To prevent spin-lock waiting for TVM threads,
+        // we schedule threads in llama.cpp and only compile kernels for one tile in TVM
+        // TVM currently does not support strided input placeholder
+        // Workaround: use T-MAC GeMV and loop over m axis in llama.cpp
+        for (int i_tile = th_tile_beg; i_tile < th_tile_end; i_tile++) {
+            const int w_offset          = i_tile * w_tile_size;
+            const int scales_offset     = scales_size * i_tile / n_tile_num;
+            for (int ine11 = 0; ine11 < ne11; ine11++) {
+                const int qlut_offset       = ne10 * ine11 * 4;
+                const int lut_scales_offset = lut_scales_size / ne11 * ine11;
+                const int dst_offset        = ne0 * ine11 + ne0 / n_tile_num * i_tile;
+
+                ggml_tmac_mul_mat_task_compute(w_ptr + w_offset,
+                                               scales_ptr + scales_offset,
+                                               qlut + qlut_offset,
+                                               lut_scales + lut_scales_offset,
+                                               lut_biases + lut_scales_offset,
+                                               dst->data + dst_offset,
+                                               ne01, ne00, 1, bits);
+            }
+        }
 
         return;
     }

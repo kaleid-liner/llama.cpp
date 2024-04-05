@@ -1,0 +1,22 @@
+#pragma once
+
+#include "ggml.h"
+#include "ggml-backend.h"
+#include "t-mac/tmac_gemm_wrapper.h"
+
+#ifdef  __cplusplus
+extern "C" {
+#endif
+
+GGML_API void ggml_tmac_init(void);
+// src0->type == Q4_0/Q2_K/Q3_K
+// T-MAC currently only supports BitNet quantization or GPTQ-like quantization (only scales, without zeros)
+// Use Q4_0/Q2_K/Q3_K as workaround
+GGML_API bool ggml_tmac_can_mul_mat(const struct ggml_tensor * src0, const struct ggml_tensor * src1, const struct ggml_tensor * dst);
+GGML_API void ggml_tmac_mul_mat_task_init(void * src1, void * qlut, void * lut_scales, void * lut_biases, int n, int k, int m, int bits);
+GGML_API bool ggml_tmac_mul_mat_task_compute(void * src0, void * scales, void * qlut, void * lut_scales, void * lut_biases, void * dst, int n, int k, int m, int bits);
+GGML_API void ggml_tmac_transform_tensor(struct ggml_tensor * tensor);
+
+#ifdef  __cplusplus
+}
+#endif
