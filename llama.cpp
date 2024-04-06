@@ -25,6 +25,9 @@
 #ifdef GGML_USE_MPI
 #  include "ggml-mpi.h"
 #endif
+#ifdef GGML_USE_TMAC
+#  include "ggml-tmac.h"
+#endif
 #ifndef QK_K
 #  ifdef GGML_QKK_64
 #    define QK_K 64
@@ -1888,6 +1891,10 @@ struct llama_context {
         ggml_vk_free_cpu_assist();
 #endif
 
+#ifdef GGML_USE_TMAC
+        ggml_tmac_free();
+#endif
+
         ggml_backend_buffer_free(buf_input);
         ggml_free(ctx_input);
     }
@@ -2824,6 +2831,9 @@ struct llama_model_loader {
             }
 
             size_done += ggml_nbytes(cur);
+#if defined(GGML_USE_TMAC)
+            ggml_tmac_transform_tensor(cur);
+#endif
         }
 
         // check if this is the last call and do final cleanup
