@@ -33,6 +33,10 @@
 #  include "ggml-metal.h"
 #endif
 
+#ifdef GGML_USE_TMAC
+#  include "ggml-tmac.h"
+#endif
+
 // TODO: replace with ggml API call
 #define QK_K 256
 
@@ -3190,6 +3194,10 @@ struct llama_context {
             ggml_backend_free(backend);
         }
 
+#ifdef GGML_USE_TMAC
+        ggml_tmac_free();
+#endif
+
         ggml_backend_buffer_free(buf_output);
     }
 
@@ -5029,6 +5037,10 @@ struct llama_model_loader {
             }
 
             size_done += n_size;
+
+#if defined(GGML_USE_TMAC)
+            ggml_tmac_transform_tensor(cur);
+#endif
         }
 
 #if defined(GGML_USE_CUDA)

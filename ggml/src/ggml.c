@@ -3655,6 +3655,10 @@ struct ggml_context * ggml_init(struct ggml_init_params params) {
             GGML_PRINT_DEBUG("%s: g_state initialized in %f ms\n", __func__, (t_end - t_start)/1000.0f);
         }
 
+#if defined(GGML_USE_TMAC)
+        ggml_tmac_init();
+#endif
+
         is_first_call = false;
     }
 
@@ -12746,21 +12750,6 @@ static void ggml_compute_forward_mul_mat_one_chunk(
     }
 }
 
-#if defined(GGML_USE_TMAC)
-static int get_type_bits(enum ggml_type type) {
-    switch (type) {
-        case GGML_TYPE_Q2_K:
-            return 2;
-        case GGML_TYPE_Q3_K:
-            return 3;
-        case GGML_TYPE_Q4_0:
-            return 4;
-        default:
-            return 0;
-    }
-}
-#endif
-
 static void ggml_compute_forward_mul_mat(
         const struct ggml_compute_params * params,
               struct ggml_tensor * dst) {
@@ -12835,16 +12824,16 @@ UseGgmlGemm1:;
             return;
         }
 
-        const int lut_scales_size = ggml_get_op_params_i32(dst, 0);
-        const int bits            = get_type_bits(type);
+        struct tmac_tensor_extra * wt = src0->extra;
+        const int bits                = ggml_tmac_get_type_bits(type);
         // src0: weight,     ne00 = k, ne01 = n
         // src1: activation, ne10 = k, ne11 = m
         char * wdata = params->wdata;
 
         // g = 4
         int8_t * qlut = wdata;
-        float * lut_scales = (float *)(qlut + ne10 * ne11 * 4);
-        float * lut_biases = (float *)(lut_scales + lut_scales_size);
+        float * lut_scales = (float *) (qlut + ne10 * ne11 * 4);
+        float * lut_biases = (float *) (lut_scales + wt->lut_scales_size);
         if (params->type == GGML_TASK_INIT) {
             if (ith != 0) {
                 return;
@@ -12855,8 +12844,7 @@ UseGgmlGemm1:;
             return;
         }
 
-        const int scales_size      = ggml_get_op_params_i32(dst, 1);
-        const int n_tile_num       = ggml_get_op_params_i32(dst, 2);  // num of bm in T-MAC
+        const int n_tile_num = wt->n_tile_num;
         GGML_ASSERT(ne0 % n_tile_num == 0);
         const int w_size           = ne00 * ne01 * bits / 8;
         const int w_tile_size      = w_size / n_tile_num;
@@ -12865,23 +12853,20 @@ UseGgmlGemm1:;
         const int th_tile_beg = ith * th_tile_num;
         const int th_tile_end = MIN((ith + 1) * th_tile_num, n_tile_num);
 
-        uint8_t * w_ptr      = src0->extra;
-        float   * scales_ptr = w_ptr + w_size;
-
         // To prevent spin-lock waiting for TVM threads,
         // we schedule threads in llama.cpp and only compile kernels for one tile in TVM
         // TVM currently does not support strided input placeholder
         // Workaround: use T-MAC GeMV and loop over m axis in llama.cpp
         for (int i_tile = th_tile_beg; i_tile < th_tile_end; i_tile++) {
             const int w_offset          = i_tile * w_tile_size;
-            const int scales_offset     = scales_size * i_tile / n_tile_num;
+            const int scales_offset     = wt->scales_size * i_tile / n_tile_num;
             for (int ine11 = 0; ine11 < ne11; ine11++) {
                 const int qlut_offset       = ne10 * ine11 * 4;
-                const int lut_scales_offset = lut_scales_size / ne11 * ine11;
+                const int lut_scales_offset = wt->lut_scales_size / ne11 * ine11;
                 const int dst_offset        = ne0 * ine11 + ne0 / n_tile_num * i_tile;
 
-                ggml_tmac_mul_mat_task_compute(w_ptr + w_offset,
-                                               scales_ptr + scales_offset,
+                ggml_tmac_mul_mat_task_compute(wt->qweights + w_offset,
+                                               wt->scales + scales_offset,
                                                qlut + qlut_offset,
                                                lut_scales + lut_scales_offset,
                                                lut_biases + lut_scales_offset,
