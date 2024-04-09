@@ -820,6 +820,24 @@ if (GGML_KOMPUTE)
     endif()
 endif()
 
+if (GGML_TMAC)
+    find_package(TMAC)
+
+    if (TMAC_FOUND)
+        message(STATUS "TMAC found")
+
+        add_compile_definitions(GGML_USE_TMAC)
+
+        set(GGML_HEADERS_TMAC ../include/ggml-tmac.h)
+        set(GGML_SOURCES_TMAC ggml-tmac.cpp)
+
+        link_directories(${TMAC_LIB_DIR})
+        set(GGML_EXTRA_LIBS ${GGML_EXTRA_LIBS} t_mac)
+    else()
+        message(WARNING "TMAC not found")
+    endif()
+endif()
+
 if (GGML_CPU_HBM)
     find_library(memkind memkind REQUIRED)
 
@@ -1311,6 +1329,7 @@ add_library(ggml
             ${GGML_SOURCES_BLAS}      ${GGML_HEADERS_BLAS}
             ${GGML_SOURCES_LLAMAFILE} ${GGML_HEADERS_LLAMAFILE}
             ${GGML_SOURCES_CANN}      ${GGML_HEADERS_CANN}
+            ${GGML_SOURCES_TMAC}      ${GGML_HEADERS_TMAC}
             ggml-aarch64.c            ggml-aarch64.h
             )
 
