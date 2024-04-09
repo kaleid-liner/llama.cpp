@@ -117,6 +117,7 @@ option(LLAMA_QKK_64                          "llama: use super-block size of 64 
 option(LLAMA_SYCL                            "llama: use SYCL"                                  OFF)
 option(LLAMA_SYCL_F16                        "llama: use 16 bit floats for sycl calculations"   OFF)
 option(LLAMA_CPU_HBM                         "llama: use memkind for CPU HBM"                   OFF)
+option(LLAMA_TMAC                            "llama: use TMAC"                                  OFF)
 
 option(LLAMA_BUILD_TESTS                     "llama: build tests"    ${LLAMA_STANDALONE})
 option(LLAMA_BUILD_EXAMPLES                  "llama: build examples" ${LLAMA_STANDALONE})
@@ -721,6 +722,24 @@ if (LLAMA_KOMPUTE)
     endif()
 endif()
 
+if (LLAMA_TMAC)
+    find_package(TMAC)
+
+    if (TMAC_FOUND)
+        message(STATUS "TMAC found")
+
+        add_compile_definitions(GGML_USE_TMAC)
+
+        set(GGML_HEADERS_TMAC ggml-tmac.h)
+        set(GGML_SOURCES_TMAC ggml-tmac.cpp)
+
+        link_directories(${TMAC_LIB_DIR})
+        set(LLAMA_EXTRA_LIBS ${LLAMA_EXTRA_LIBS} t_mac)
+    else()
+        message(WARNING "TMAC not found")
+    endif()
+endif()
+
 if (LLAMA_CPU_HBM)
     find_library(memkind memkind REQUIRED)
 
@@ -1101,6 +1120,7 @@ add_library(ggml OBJECT
             ${GGML_SOURCES_KOMPUTE} ${GGML_HEADERS_KOMPUTE}
             ${GGML_SOURCES_VULKAN}  ${GGML_HEADERS_VULKAN}
             ${GGML_SOURCES_ROCM}    ${GGML_HEADERS_ROCM}
+            ${GGML_SOURCES_TMAC}    ${GGML_HEADERS_TMAC}
             )
 
 target_include_directories(ggml PUBLIC . ${LLAMA_EXTRA_INCLUDES})

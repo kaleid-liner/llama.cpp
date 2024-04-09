@@ -10460,8 +10460,8 @@ static void ggml_compute_forward_mul_mat(
                                                qlut + qlut_offset,
                                                lut_scales + lut_scales_offset,
                                                lut_biases + lut_scales_offset,
-                                               dst->data + dst_offset,
-                                               ne01, ne00, 1, bits);
+                                               (float *) dst->data + dst_offset,
+                                               ne01 / n_tile_num, ne00, 1, bits);
             }
         }
 

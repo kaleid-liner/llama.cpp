@@ -1,7 +1,10 @@
-#include "ggml-tmac.h"
-#include "ggml-quants.h"
 #include <vector>
 #include <type_traits>
+
+#include "ggml-tmac.h"
+#include "ggml-quants.h"
+
+#include "t-mac/tmac_gemm_wrapper.h"
 
 static bool initialized = false;
 
