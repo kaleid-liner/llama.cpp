@@ -12840,7 +12840,7 @@ UseGgmlGemm1:;
             }
             GGML_ASSERT(src1->type == GGML_TYPE_F32);
             for (int ine11 = 0; ine11 < ne11; ine11++) {
-                ggml_tmac_mul_mat_task_init(src1->data,
+                ggml_tmac_mul_mat_task_init((char *) src1->data + ine11 * nb11,
                                             qlut + ne10 * ine11 * 4,
                                             lut_scales + wt->lut_scales_size * ine11,
                                             lut_biases + wt->lut_scales_size * ine11,
@@ -19804,6 +19804,11 @@ struct ggml_cplan ggml_graph_plan(
                 {
                     const enum ggml_type vec_dot_type = type_traits[node->src[0]->type].vec_dot_type;
 
+#if defined(GGML_USE_TMAC)
+                    if (ggml_tmac_can_mul_mat(node->src[0], node->src[1], node)) {
+                        cur = ggml_tmac_mul_mat_get_wsize(node->src[0], node->src[1], node);
+                    } else
+#endif
                     if (node->src[1]->type != vec_dot_type) {
                         cur = ggml_row_size(vec_dot_type, ggml_nelements(node->src[1]));
                     }

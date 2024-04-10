@@ -3194,10 +3194,6 @@ struct llama_context {
             ggml_backend_free(backend);
         }
 
-#ifdef GGML_USE_TMAC
-        ggml_tmac_free();
-#endif
-
         ggml_backend_buffer_free(buf_output);
     }
 
