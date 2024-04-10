@@ -10423,13 +10423,19 @@ static void ggml_compute_forward_mul_mat(
         // g = 4
         int8_t * qlut = wdata;
         float * lut_scales = (float *) (qlut + ne10 * ne11 * 4);
-        float * lut_biases = (float *) (lut_scales + wt->lut_scales_size);
+        float * lut_biases = (float *) (lut_scales + wt->lut_scales_size * ne11);
         if (params->type == GGML_TASK_INIT) {
             if (ith != 0) {
                 return;
             }
             GGML_ASSERT(src1->type == GGML_TYPE_F32);
-            ggml_tmac_mul_mat_task_init(src1->data, qlut, lut_scales, lut_biases, ne01, ne00, ne11, bits);
+            for (int ine11 = 0; ine11 < ne11; ine11++) {
+                ggml_tmac_mul_mat_task_init(src1->data,
+                                            qlut + ne10 * ine11 * 4,
+                                            lut_scales + wt->lut_scales_size * ine11,
+                                            lut_biases + wt->lut_scales_size * ine11,
+                                            ne01, ne00, 1, bits);
+            }
 
             return;
         }
