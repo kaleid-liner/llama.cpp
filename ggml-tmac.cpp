@@ -6,11 +6,15 @@
 
 #include "t-mac/tmac_gemm_wrapper.h"
 
+#define GGML_TMAC_MAX_NODES 8192
+
 static bool initialized = false;
 
 static TMAC::TMACGeMMWrapper<float> * wrapper;
 
-static std::vector<struct tmac_tensor_extra> tmac_tensor_extras;
+static tmac_tensor_extra * tmac_tensor_extras;
+
+static size_t tmac_tensor_extras_index;
 
 static void * aligned_malloc(size_t size) {
 #if defined(_WIN32)
@@ -31,27 +35,30 @@ static void aligned_free(void * ptr) {
 }
 
 void ggml_tmac_init(void) {
+    LOG(INFO) << "ggml_tmac_init";
     if (initialized) {
         return;
     }
     initialized = true;
 
     wrapper = new TMAC::TMACGeMMWrapper<float>();
-    tmac_tensor_extras.clear();
+    tmac_tensor_extras = new tmac_tensor_extra[GGML_TMAC_MAX_NODES];
+    tmac_tensor_extras_index = 0;
 }
 
 void ggml_tmac_free(void) {
+    LOG(INFO) << "ggml_tmac_free";
     if (!initialized) {
         return;
     }
     initialized = false;
 
     delete wrapper;
-    for (auto & tmac_tensor_extra : tmac_tensor_extras) {
-        aligned_free(tmac_tensor_extra.qweights);
-        aligned_free(tmac_tensor_extra.scales);
+    for (size_t i = 0; i < tmac_tensor_extras_index; i++) {
+        aligned_free(tmac_tensor_extras[i].qweights);
+        aligned_free(tmac_tensor_extras[i].scales);
     }
-    tmac_tensor_extras.clear();
+    delete[] tmac_tensor_extras;
 }
 
 static bool is_type_supported(enum ggml_type type) {
@@ -95,6 +102,17 @@ bool ggml_tmac_can_mul_mat(const struct ggml_tensor * src0, const struct ggml_te
     return false;
 }
 
+size_t ggml_tmac_mul_mat_get_wsize(const struct ggml_tensor * src0, const struct ggml_tensor * src1, const struct ggml_tensor * dst) {
+    const size_t ne01 = src0->ne[1];
+    const size_t ne10 = src1->ne[0];
+    const size_t ne11 = src1->ne[1];
+    const int bits = ggml_tmac_get_type_bits(src0->type);
+
+    TMAC::TMACGeMMConfig kcfg = wrapper->get_kcfg(ne01, ne10, 1, bits);
+
+    return ne10 * ne11 * 4 * sizeof(int8_t) + kcfg.lut_scales_size * ne11 * 2 * sizeof(float);
+}
+
 // m = batch_size
 // n = output_dim
 void ggml_tmac_mul_mat_task_init(void * src1, void * qlut, void * lut_scales, void * lut_biases, int n, int k, int m, int bits) {
@@ -136,14 +154,14 @@ void ggml_tmac_transform_tensor(struct ggml_tensor * tensor) {
 
     uint8_t * qweights = (uint8_t *) aligned_malloc(k * m / 8);
     float * scales = (float *) aligned_malloc(scales_size * sizeof(float));
-    tmac_tensor_extras.push_back({
+    tensor->extra = tmac_tensor_extras + tmac_tensor_extras_index;
+    tmac_tensor_extras[tmac_tensor_extras_index++] = {
         /* .lut_scales_size = */ lut_scales_size,
         /* .scales_size     = */ scales_size,
         /* .n_tile_num      = */ n_tile_num,
         /* .qweights        = */ qweights,
         /* .scales          = */ scales
-    });
-    tensor->extra = &tmac_tensor_extras[tmac_tensor_extras.size() - 1];
+    };
 
 // for fast testing
 #define TMAC_EMPTY_WEIGHTS

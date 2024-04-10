@@ -1891,10 +1891,6 @@ struct llama_context {
         ggml_vk_free_cpu_assist();
 #endif
 
-#ifdef GGML_USE_TMAC
-        ggml_tmac_free();
-#endif
-
         ggml_backend_buffer_free(buf_input);
         ggml_free(ctx_input);
     }

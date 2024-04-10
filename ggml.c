@@ -10430,7 +10430,7 @@ static void ggml_compute_forward_mul_mat(
             }
             GGML_ASSERT(src1->type == GGML_TYPE_F32);
             for (int ine11 = 0; ine11 < ne11; ine11++) {
-                ggml_tmac_mul_mat_task_init(src1->data,
+                ggml_tmac_mul_mat_task_init((char *) src1->data + ine11 * nb11,
                                             qlut + ne10 * ine11 * 4,
                                             lut_scales + wt->lut_scales_size * ine11,
                                             lut_biases + wt->lut_scales_size * ine11,
@@ -17693,6 +17693,11 @@ struct ggml_cplan ggml_graph_plan(const struct ggml_cgraph * cgraph, int n_threa
                                 * node->src[0]->ne[0]*node->src[0]->ne[1]
                                 * node->src[1]->ne[2]*node->src[1]->ne[3];
                         }
+                    } else
+#endif
+#if defined(GGML_USE_TMAC)
+                    if (ggml_tmac_can_mul_mat(node->src[0], node->src[1], node)) {
+                        cur = ggml_tmac_mul_mat_get_wsize(node->src[0], node->src[1], node);
                     } else
 #endif
                     if (node->src[1]->type != vec_dot_type) {

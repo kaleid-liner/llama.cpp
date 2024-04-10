@@ -118,6 +118,7 @@ option(LLAMA_SYCL                            "llama: use SYCL"                  
 option(LLAMA_SYCL_F16                        "llama: use 16 bit floats for sycl calculations"   OFF)
 option(LLAMA_CPU_HBM                         "llama: use memkind for CPU HBM"                   OFF)
 option(LLAMA_TMAC                            "llama: use TMAC"                                  OFF)
+option(LLAMA_TMAC_SYSLIB                     "llama: use TMAC system library"                   OFF)
 
 option(LLAMA_BUILD_TESTS                     "llama: build tests"    ${LLAMA_STANDALONE})
 option(LLAMA_BUILD_EXAMPLES                  "llama: build examples" ${LLAMA_STANDALONE})
