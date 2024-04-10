@@ -115,8 +115,8 @@ void ggml_tmac_transform_tensor(struct ggml_tensor * tensor) {
     const int g = 4;
     const int ngroups_per_elem = 2;
 
-    const int k = tensor->ne[0];
-    const int m = tensor->ne[1] * bits;  // `n` in llama.cpp
+    int k = tensor->ne[0];
+    int m = tensor->ne[1];  // `n` in llama.cpp
 
     TMAC::TMACGeMMConfig kcfg = wrapper->get_kcfg(m, k, 1, bits);
     const int bm              = kcfg.bm;
@@ -127,11 +127,15 @@ void ggml_tmac_transform_tensor(struct ggml_tensor * tensor) {
     const int lut_scales_size = kcfg.lut_scales_size;
     const int scales_size     = kcfg.scales_size;
     const int n_tile_num      = kcfg.n_tile_num;
+    LOG(INFO) << "Transforming tensor: " << tensor->name << " (m: " << m << ", k: " << k << ", bits: " << bits << ")";
+    LOG(INFO) << "kcfg (bm=" << bm << ", simd_n_in=" << simd_n_in << ", simd_n_out=" << simd_n_out << ", kfactor=" << kfactor
+              << ", group_size=" << group_size << ", lut_scales_size=" << lut_scales_size << ", scales_size=" << scales_size << ", n_tile_num=" << n_tile_num << ")";
 
     const int mgroup = ngroups_per_elem * simd_n_in;
+    m = m * bits;
 
     uint8_t * qweights = (uint8_t *) aligned_malloc(k * m / 8);
-    float * scales = (float *) aligned_malloc(scales_size);
+    float * scales = (float *) aligned_malloc(scales_size * sizeof(float));
     tmac_tensor_extras.push_back({
         /* .lut_scales_size = */ lut_scales_size,
         /* .scales_size     = */ scales_size,
@@ -141,6 +145,9 @@ void ggml_tmac_transform_tensor(struct ggml_tensor * tensor) {
     });
     tensor->extra = &tmac_tensor_extras[tmac_tensor_extras.size() - 1];
 
+// for fast testing
+#define TMAC_EMPTY_WEIGHTS
+#ifndef TMAC_EMPTY_WEIGHTS
     // TODO: optimize to accelerate weights loading
     uint8_t * buf1 = (uint8_t *) malloc(m * k);
     uint8_t * buf2 = (uint8_t *) malloc(m * k / g);
@@ -222,9 +229,9 @@ void ggml_tmac_transform_tensor(struct ggml_tensor * tensor) {
                 new_ik = (new_idx % nb3) / nb4;
                 int new_ikf = (new_idx % nb4);
                 new_idx = new_im * k / g / kfactor * bm / mgroup * kfactor * simd_n_in * ngroups_per_elem +
-                          new_ikf * bm / mgroup * kfactor * simd_n_in * ngroups_per_elem +
+                          new_ik * bm / mgroup * kfactor * simd_n_in * ngroups_per_elem +
                           new_ibm * kfactor * simd_n_in * ngroups_per_elem +
-                          new_ik * simd_n_in * ngroups_per_elem +
+                          new_ikf * simd_n_in * ngroups_per_elem +
                           new_isni * ngroups_per_elem +
                           new_ing;
                 new_idx = new_idx / ngroups_per_elem;
@@ -260,6 +267,7 @@ void ggml_tmac_transform_tensor(struct ggml_tensor * tensor) {
             if (scales_size < m / bits) {
                 new_idx = im / m_group_size;
             } else {
+                idx = idx / group_size;
                 int new_im = idx / (bm / bits * k / group_size);
                 int new_ibm = (idx % (bm / bits * k / group_size)) / (k / group_size);
                 int new_ik = (idx % (k / group_size));
@@ -271,6 +279,7 @@ void ggml_tmac_transform_tensor(struct ggml_tensor * tensor) {
 
     free(buf1);
     free(buf2);
+#endif
 }
 
 int ggml_tmac_get_type_bits(enum ggml_type type) {

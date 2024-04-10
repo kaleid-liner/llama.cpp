@@ -5039,7 +5039,11 @@ struct llama_model_loader {
             size_done += n_size;
 
 #if defined(GGML_USE_TMAC)
-            ggml_tmac_transform_tensor(cur);
+            LLM_TN tn(get_arch());
+            // only transform weights of mul_mat
+            if (std::string(cur->name).find(tn(LLM_TENSOR_TOKEN_EMBD)) == std::string::npos) {
+                ggml_tmac_transform_tensor(cur);
+            }
 #endif
         }
 
