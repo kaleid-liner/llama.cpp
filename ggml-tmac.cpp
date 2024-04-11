@@ -10,11 +10,11 @@
 
 static bool initialized = false;
 
-static TMAC::TMACGeMMWrapper<float> * wrapper;
+static TMAC::TMACGeMMWrapper<float> * wrapper = nullptr;
 
-static tmac_tensor_extra * tmac_tensor_extras;
+static tmac_tensor_extra * tmac_tensor_extras = nullptr;
 
-static size_t tmac_tensor_extras_index;
+static size_t tmac_tensor_extras_index = 0;
 
 static void * aligned_malloc(size_t size) {
 #if defined(_WIN32)
@@ -36,29 +36,37 @@ static void aligned_free(void * ptr) {
 
 void ggml_tmac_init(void) {
     LOG(INFO) << "ggml_tmac_init";
+
     if (initialized) {
         return;
     }
     initialized = true;
 
-    wrapper = new TMAC::TMACGeMMWrapper<float>();
-    tmac_tensor_extras = new tmac_tensor_extra[GGML_TMAC_MAX_NODES];
+    if (wrapper == nullptr) {
+        wrapper = new TMAC::TMACGeMMWrapper<float>();
+    }
+    if (tmac_tensor_extras == nullptr) {
+        tmac_tensor_extras = new tmac_tensor_extra[GGML_TMAC_MAX_NODES];
+    }
     tmac_tensor_extras_index = 0;
 }
 
 void ggml_tmac_free(void) {
     LOG(INFO) << "ggml_tmac_free";
+
     if (!initialized) {
         return;
     }
     initialized = false;
 
     delete wrapper;
+    wrapper = nullptr;
     for (size_t i = 0; i < tmac_tensor_extras_index; i++) {
         aligned_free(tmac_tensor_extras[i].qweights);
         aligned_free(tmac_tensor_extras[i].scales);
     }
     delete[] tmac_tensor_extras;
+    tmac_tensor_extras = nullptr;
 }
 
 static bool is_type_supported(enum ggml_type type) {
@@ -297,6 +305,9 @@ void ggml_tmac_transform_tensor(struct ggml_tensor * tensor) {
 
     free(buf1);
     free(buf2);
+#else
+    memset(qweights, 0, k * m / 8);
+    memset(scales, 0, scales_size * sizeof(float));
 #endif
 }
 
