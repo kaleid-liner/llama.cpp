@@ -175,8 +175,8 @@ void ggml_tmac_transform_tensor(struct ggml_tensor * tensor) {
 #define TMAC_EMPTY_WEIGHTS
 #ifndef TMAC_EMPTY_WEIGHTS
     // TODO: optimize to accelerate weights loading
-    uint8_t * buf1 = (uint8_t *) malloc(m * k);
-    uint8_t * buf2 = (uint8_t *) malloc(m * k / g);
+    uint8_t * buf1 = new uint8_t[m * k];
+    uint8_t * buf2 = new uint8_t[m * k / g];
 
     // # (M // bits, K, bits)
     // w = np.stack([(w >> ib) & 1 for ib in range(bits)], axis=-1)
@@ -191,7 +191,7 @@ void ggml_tmac_transform_tensor(struct ggml_tensor * tensor) {
                 } else if (bits == 4) {
                     v = BlockQTypeAccessor<4>::get_q(tensor->data, im * k + ik);
                 }
-                buf1[im * k * bits + ik * bits + bits] = (v >> ib) & 1;
+                buf1[im * k * bits + ik * bits + ib] = (v >> ib) & 1;
             }
         }
     }
@@ -207,7 +207,7 @@ void ggml_tmac_transform_tensor(struct ggml_tensor * tensor) {
                 int new_ib = ib;
                 int new_ik = ik / g;
                 int new_ig = ik % g;
-                buf2[new_im * bits * k / g + new_ib * k / g + new_ik] += buf1[im * k * bits + ik * bits + bits] << new_ig;
+                buf2[new_im * bits * k / g + new_ib * k / g + new_ik] += buf1[im * k * bits + ik * bits + ib] << new_ig;
             }
         }
     }
@@ -303,11 +303,14 @@ void ggml_tmac_transform_tensor(struct ggml_tensor * tensor) {
         }
     }
 
-    free(buf1);
-    free(buf2);
+    delete[] buf1;
+    delete[] buf2;
 #else
-    memset(qweights, 0, k * m / 8);
-    memset(scales, 0, scales_size * sizeof(float));
+    memset(qweights, 0x88, k * m / 8);
+    for (int i = 0; i < scales_size; i++) {
+        scales[i] = 1.0f;
+    }
+
 #endif
 }
 
