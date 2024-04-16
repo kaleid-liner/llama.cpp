@@ -72,7 +72,8 @@ void ggml_tmac_free(void) {
 static bool is_type_supported(enum ggml_type type) {
     if (type == GGML_TYPE_Q4_0 ||
         type == GGML_TYPE_IQ2_XXS ||
-        type == GGML_TYPE_IQ3_XXS) {
+        type == GGML_TYPE_IQ3_XXS ||
+        type == GGML_TYPE_Q2_K) {
         return true;
     } else {
         return false;
@@ -329,4 +330,8 @@ int ggml_tmac_get_type_bits(enum ggml_type type) {
         default:
             return 0;
     }
+}
+
+void ggml_tmac_set_n_threads(int n_threads) {
+    wrapper->set_num_threads(n_threads);
 }

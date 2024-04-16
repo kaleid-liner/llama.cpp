@@ -119,6 +119,7 @@ option(LLAMA_SYCL_F16                        "llama: use 16 bit floats for sycl 
 option(LLAMA_CPU_HBM                         "llama: use memkind for CPU HBM"                   OFF)
 option(LLAMA_TMAC                            "llama: use TMAC"                                  OFF)
 option(LLAMA_TMAC_SYSLIB                     "llama: use TMAC system library"                   OFF)
+option(LLAMA_TMAC_TVM_THREADPOOL             "llama: use TVM threadpool for TMAC"               OFF)
 
 option(LLAMA_BUILD_TESTS                     "llama: build tests"    ${LLAMA_STANDALONE})
 option(LLAMA_BUILD_EXAMPLES                  "llama: build examples" ${LLAMA_STANDALONE})
@@ -730,11 +731,15 @@ if (LLAMA_TMAC)
         message(STATUS "TMAC found")
 
         add_compile_definitions(GGML_USE_TMAC)
+        if (LLAMA_TMAC_TVM_THREADPOOL)
+            add_compile_definitions(TMAC_USE_TVM_THREADPOOL)
+        endif()
 
         set(GGML_HEADERS_TMAC ggml-tmac.h)
         set(GGML_SOURCES_TMAC ggml-tmac.cpp)
 
         link_directories(${TMAC_LIB_DIR})
+        # TODO: link t_mac_object when LLAMA_TMAC_SYSLIB
         set(LLAMA_EXTRA_LIBS ${LLAMA_EXTRA_LIBS} t_mac)
     else()
         message(WARNING "TMAC not found")

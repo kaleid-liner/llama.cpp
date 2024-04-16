@@ -7948,6 +7948,13 @@ static int llama_decode_internal(
     }
 #endif
 
+#ifdef GGML_USE_TMAC
+    #ifdef TMAC_USE_TVM_THREADPOOL
+        ggml_tmac_set_n_threads(n_threads);
+        n_threads = 1;
+    #endif
+#endif
+
     if (lctx.backend_cpu != nullptr) {
         ggml_backend_cpu_set_n_threads(lctx.backend_cpu, n_threads);
     }
