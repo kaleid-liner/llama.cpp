@@ -12850,6 +12850,25 @@ UseGgmlGemm1:;
             return;
         }
 
+#if defined(TMAC_USE_TVM_THREADPOOL)
+        if (ith != 0) {
+            return;
+        }
+        // TODO: schedule ne11(m) in T-MAC
+        for (int ine11 = 0; ine11 < ne11; ine11++) {
+            const int qlut_offset       = ne10 * ine11 * 4;
+            const int lut_scales_offset = wt->lut_scales_size * ine11;
+            const int dst_offset        = ne0 * ine11;
+
+            ggml_tmac_mul_mat_task_compute(wt->qweights,
+                                           wt->scales,
+                                           qlut + qlut_offset,
+                                           lut_scales + lut_scales_offset,
+                                           lut_biases + lut_scales_offset,
+                                           (float *) dst->data + dst_offset,
+                                           ne01, ne00, 1, bits);
+        }
+#else
         const int n_tile_num = wt->n_tile_num;
         GGML_ASSERT(ne0 % n_tile_num == 0);
         const int w_size           = ne00 * ne01 * bits / 8;
@@ -12880,6 +12899,7 @@ UseGgmlGemm1:;
                                                ne01 / n_tile_num, ne00, 1, bits);
             }
         }
+#endif
 
         return;
     }
