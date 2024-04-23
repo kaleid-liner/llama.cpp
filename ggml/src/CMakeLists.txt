@@ -827,16 +827,20 @@ if (GGML_TMAC)
         message(STATUS "TMAC found")
 
         add_compile_definitions(GGML_USE_TMAC)
-        if (GGML_TMAC_TVM_THREADPOOL)
-            add_compile_definitions(TMAC_USE_TVM_THREADPOOL)
-        endif()
 
         set(GGML_HEADERS_TMAC ../include/ggml-tmac.h)
         set(GGML_SOURCES_TMAC ggml-tmac.cpp)
 
         link_directories(${TMAC_LIB_DIR})
-        # TODO: link t_mac_object when LLAMA_TMAC_SYSLIB
-        set(GGML_EXTRA_LIBS ${GGML_EXTRA_LIBS} t_mac)
+        # TODO: link t_mac_object when GGML_TMAC_SYSLIB
+
+        if (GGML_TMAC_TVM_THREADPOOL)
+            add_compile_definitions(TMAC_USE_TVM_THREADPOOL)
+            set(GGML_EXTRA_LIBS ${GGML_EXTRA_LIBS} t_mac)
+        else()
+            set(GGML_EXTRA_LIBS ${GGML_EXTRA_LIBS} t_mac_no_tvm)
+            set(GGML_SOURCES_TMAC ${GGML_SOURCES_TMAC} ${TMAC_KERNELS_SOURCE})
+        endif()
     else()
         message(WARNING "TMAC not found")
     endif()
