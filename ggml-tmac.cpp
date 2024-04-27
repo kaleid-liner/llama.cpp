@@ -10,7 +10,7 @@
 
 static bool initialized = false;
 
-static TMAC::TMACGeMMWrapper<float> * wrapper = nullptr;
+static TMAC::TMACGeMMWrapper<tmac_float_type> * wrapper = nullptr;
 
 static tmac_tensor_extra * tmac_tensor_extras = nullptr;
 
@@ -43,7 +43,7 @@ void ggml_tmac_init(void) {
     initialized = true;
 
     if (wrapper == nullptr) {
-        wrapper = new TMAC::TMACGeMMWrapper<float>();
+        wrapper = new TMAC::TMACGeMMWrapper<tmac_float_type>();
     }
     if (tmac_tensor_extras == nullptr) {
         tmac_tensor_extras = new tmac_tensor_extra[GGML_TMAC_MAX_NODES];
@@ -96,8 +96,14 @@ struct BlockQTypeAccessor {
         return simd_qs[simd_idx % SIMD_LEN] >> (simd_idx / SIMD_LEN * Bits);
     }
 
-    static float get_scale(const void * data, int idx) {
-        return ggml_fp16_to_fp32(((const block_t *) data)[idx / group_size].d);
+    static tmac_float_type get_scale(const void * data, int idx) {
+        ggml_fp16_t d = ((const block_t *) data)[idx / group_size].d;
+        if (sizeof(tmac_float_type) == 2) {
+            tmac_float_type * fp16dp = reinterpret_cast<tmac_float_type *>(&d);
+            return *fp16dp;
+        } else {
+            return ggml_fp16_to_fp32(((const block_t *) data)[idx / group_size].d);
+        }
     }
 };
 
@@ -119,7 +125,12 @@ size_t ggml_tmac_mul_mat_get_wsize(const struct ggml_tensor * src0, const struct
 
     TMAC::TMACGeMMConfig kcfg = wrapper->get_kcfg(ne01, ne10, 1, bits);
 
-    return ne10 * ne11 * 4 * sizeof(int8_t) + kcfg.lut_scales_size * ne11 * 2 * sizeof(float);
+    size_t wsize = ne10 * ne11 * 4 * sizeof(int8_t) + kcfg.lut_scales_size * ne11 * 2 * sizeof(tmac_float_type);
+    if (sizeof(tmac_float_type) == 2) {
+        // Need fp32 to fp16 conversion
+        wsize += std::max(ne10, ne01) * ne11 * sizeof(tmac_float_type);
+    }
+    return wsize;
 }
 
 // m = batch_size
@@ -162,7 +173,7 @@ void ggml_tmac_transform_tensor(struct ggml_tensor * tensor) {
     m = m * bits;
 
     uint8_t * qweights = (uint8_t *) aligned_malloc(k * m / 8);
-    float * scales = (float *) aligned_malloc(scales_size * sizeof(float));
+    tmac_float_type * scales = (tmac_float_type *) aligned_malloc(scales_size * sizeof(tmac_float_type));
     tensor->extra = tmac_tensor_extras + tmac_tensor_extras_index;
     tmac_tensor_extras[tmac_tensor_extras_index++] = {
         /* .lut_scales_size = */ lut_scales_size,
@@ -173,7 +184,7 @@ void ggml_tmac_transform_tensor(struct ggml_tensor * tensor) {
     };
 
 // for fast testing
-#define TMAC_EMPTY_WEIGHTS
+// #define TMAC_EMPTY_WEIGHTS
 #ifndef TMAC_EMPTY_WEIGHTS
     // TODO: optimize to accelerate weights loading
     uint8_t * buf1 = new uint8_t[m * k];
@@ -281,7 +292,7 @@ void ggml_tmac_transform_tensor(struct ggml_tensor * tensor) {
     // scales = scales.reshape(M // bm, bm // bits, K // group_size).transpose(0, 2, 1)
     for (int im = 0; im < m / bits; im += m_group_size) {
         for (int ik = 0; ik < k; ik += k_group_size) {
-            float scale;
+            tmac_float_type scale;
             int idx = im * k + ik;
             if (bits == 2) {
                 scale = BlockQTypeAccessor<2>::get_scale(tensor->data, idx);

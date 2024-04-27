@@ -10422,15 +10422,23 @@ static void ggml_compute_forward_mul_mat(
 
         // g = 4
         int8_t * qlut = wdata;
-        float * lut_scales = (float *) (qlut + ne10 * ne11 * 4);
-        float * lut_biases = (float *) (lut_scales + wt->lut_scales_size * ne11);
+        tmac_float_type * lut_scales = (tmac_float_type *) (qlut + ne10 * ne11 * 4);
+        tmac_float_type * lut_biases = (tmac_float_type *) (lut_scales + wt->lut_scales_size * ne11);
+        tmac_float_type * tmac_f_ptr = (tmac_float_type *) (lut_biases + wt->lut_scales_size * ne11);
         if (params->type == GGML_TASK_INIT) {
             if (ith != 0) {
                 return;
             }
             GGML_ASSERT(src1->type == GGML_TYPE_F32);
+            tmac_float_type * act_input;
+            if (sizeof(tmac_float_type) == 2) {
+                ggml_fp32_to_fp16_row(src1->data, tmac_f_ptr, ne10 * ne11);
+                act_input = tmac_f_ptr;
+            } else {
+                act_input = src1->data;
+            }
             for (int ine11 = 0; ine11 < ne11; ine11++) {
-                ggml_tmac_mul_mat_task_init((char *) src1->data + ine11 * nb11,
+                ggml_tmac_mul_mat_task_init(act_input + ne10 * ine11,
                                             qlut + ne10 * ine11 * 4,
                                             lut_scales + wt->lut_scales_size * ine11,
                                             lut_biases + wt->lut_scales_size * ine11,
@@ -10440,6 +10448,12 @@ static void ggml_compute_forward_mul_mat(
             return;
         }
 
+        tmac_float_type * act_output;
+        if (sizeof(tmac_float_type) == 2) {
+            act_output = tmac_f_ptr;
+        } else {
+            act_output = dst->data;
+        }
 #if defined(TMAC_USE_TVM_THREADPOOL)
         if (ith != 0) {
             return;
@@ -10455,8 +10469,11 @@ static void ggml_compute_forward_mul_mat(
                                            qlut + qlut_offset,
                                            lut_scales + lut_scales_offset,
                                            lut_biases + lut_scales_offset,
-                                           (float *) dst->data + dst_offset,
+                                           act_output + dst_offset,
                                            ne01, ne00, 1, bits);
+        }
+        if (sizeof(tmac_float_type) == 2) {
+            ggml_fp16_to_fp32_row(tmac_f_ptr, dst->data, ne00 * ne01);
         }
 #else
         const int n_tile_num = wt->n_tile_num;
@@ -10485,8 +10502,11 @@ static void ggml_compute_forward_mul_mat(
                                                qlut + qlut_offset,
                                                lut_scales + lut_scales_offset,
                                                lut_biases + lut_scales_offset,
-                                               (float *) dst->data + dst_offset,
+                                               act_output + dst_offset,
                                                ne01 / n_tile_num, ne00, 1, bits);
+                if (sizeof(tmac_float_type) == 2) {
+                    ggml_fp16_to_fp32_row(tmac_f_ptr + dst_offset, (float *) dst->data + dst_offset, ne01 / n_tile_num);
+                }
             }
         }
 #endif

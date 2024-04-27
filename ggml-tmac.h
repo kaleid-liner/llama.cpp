@@ -3,6 +3,13 @@
 #include "ggml.h"
 #include "ggml-backend.h"
 
+#ifdef __ARM_NEON
+#include <arm_neon.h>
+typedef float16_t tmac_float_type;
+#else
+typedef float tmac_float_type;
+#endif
+
 #ifdef  __cplusplus
 extern "C" {
 #endif
@@ -12,7 +19,7 @@ struct tmac_tensor_extra {
     int scales_size;
     int n_tile_num;
     uint8_t * qweights;
-    float * scales;
+    tmac_float_type * scales;
 };
 
 GGML_API void ggml_tmac_init(void);
