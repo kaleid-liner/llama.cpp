@@ -145,7 +145,7 @@ void ggml_tmac_mul_mat_task_compute(void * src0, void * scales, void * qlut, voi
 }
 
 void ggml_tmac_transform_tensor(struct ggml_tensor * tensor) {
-    if (!is_type_supported(tensor->type)) {
+    if (!(is_type_supported(tensor->type) && tensor->backend == GGML_BACKEND_CPU && tensor->extra == nullptr)) {
         return;
     }
 
@@ -168,6 +168,10 @@ void ggml_tmac_transform_tensor(struct ggml_tensor * tensor) {
     LOG(INFO) << "Transforming tensor: " << tensor->name << " (m: " << m << ", k: " << k << ", bits: " << bits << ")";
     LOG(INFO) << "kcfg (bm=" << bm << ", simd_n_in=" << simd_n_in << ", simd_n_out=" << simd_n_out << ", kfactor=" << kfactor
               << ", group_size=" << group_size << ", lut_scales_size=" << lut_scales_size << ", scales_size=" << scales_size << ", n_tile_num=" << n_tile_num << ")";
+    if (bm == 0) {
+        LOG(INFO) << "Failed to find kcfg. Abort transforming";
+        return;
+    }
 
     const int mgroup = ngroups_per_elem * simd_n_in;
     m = m * bits;

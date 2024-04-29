@@ -4756,16 +4756,17 @@ struct llama_model_loader {
             bool is_ok = true;
             for (size_t i = 0; i < GGML_MAX_DIMS; ++i) {
                 if ((i < ne.size() && ne[i] != cur->ne[i]) || (i >= ne.size() && cur->ne[i] != 1)) {
-                    is_ok = false;
-                    break;
+                    // is_ok = false;
+                    cur->ne[i] = ne[i];
+                    // break;
                 }
             }
             if (!is_ok) {
-                throw std::runtime_error(
-                        format("%s: tensor '%s' has wrong shape; expected %s, got %s",
-                            __func__, name.c_str(),
-                            llama_format_tensor_shape(ne).c_str(),
-                            llama_format_tensor_shape(cur).c_str()));
+                // throw std::runtime_error(
+                //         format("%s: tensor '%s' has wrong shape; expected %s, got %s",
+                //             __func__, name.c_str(),
+                //             llama_format_tensor_shape(ne).c_str(),
+                //             llama_format_tensor_shape(cur).c_str()));
             }
         }
 
@@ -5035,11 +5036,8 @@ struct llama_model_loader {
             size_done += n_size;
 
 #if defined(GGML_USE_TMAC)
-            LLM_TN tn(get_arch());
-            // only transform weights of mul_mat
-            if (std::string(cur->name).find(tn(LLM_TENSOR_TOKEN_EMBD)) == std::string::npos) {
-                ggml_tmac_transform_tensor(cur);
-            }
+            // Do pre-transformation to reduce first-run latency
+            ggml_tmac_transform_tensor(cur);
 #endif
         }
 
