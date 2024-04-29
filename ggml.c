@@ -10414,8 +10414,7 @@ static void ggml_compute_forward_mul_mat(
             return;
         }
 
-        struct tmac_tensor_extra * wt = src0->extra;
-        const int bits                = ggml_tmac_get_type_bits(type);
+        const int bits = ggml_tmac_get_type_bits(type);
         // src0: weight,     ne00 = k, ne01 = n
         // src1: activation, ne10 = k, ne11 = m
         char * wdata = params->wdata;
@@ -10423,12 +10422,21 @@ static void ggml_compute_forward_mul_mat(
         // g = 4
         int8_t * qlut = wdata;
         tmac_float_type * lut_scales = (tmac_float_type *) (qlut + ne10 * ne11 * 4);
-        tmac_float_type * lut_biases = (tmac_float_type *) (lut_scales + wt->lut_scales_size * ne11);
-        tmac_float_type * tmac_f_ptr = (tmac_float_type *) (lut_biases + wt->lut_scales_size * ne11);
         if (params->type == GGML_TASK_INIT) {
             if (ith != 0) {
                 return;
             }
+            // Transform tensor if not already transformed
+            // Although we have done this in file `llama.cpp`,
+            // we still need to do it here for non-model inference, e.g., test-backend-ops.cpp.
+            // It's better to do this in ggml-backend.c,
+            // but llama.cpp directly manipulates tensor.data for cbe in a lot of space.
+            ggml_tmac_transform_tensor(src0);
+
+            struct tmac_tensor_extra * wt = src0->extra;
+            tmac_float_type * lut_biases = (tmac_float_type *) (lut_scales + wt->lut_scales_size * ne11);
+            tmac_float_type * tmac_f_ptr = (tmac_float_type *) (lut_biases + wt->lut_scales_size * ne11);
+
             GGML_ASSERT(src1->type == GGML_TYPE_F32);
             tmac_float_type * act_input;
             if (sizeof(tmac_float_type) == 2) {
@@ -10447,6 +10455,10 @@ static void ggml_compute_forward_mul_mat(
 
             return;
         }
+
+        struct tmac_tensor_extra * wt = src0->extra;
+        tmac_float_type * lut_biases = (tmac_float_type *) (lut_scales + wt->lut_scales_size * ne11);
+        tmac_float_type * tmac_f_ptr = (tmac_float_type *) (lut_biases + wt->lut_scales_size * ne11);
 
         tmac_float_type * act_output;
         if (sizeof(tmac_float_type) == 2) {

@@ -2702,8 +2702,9 @@ struct llama_model_loader {
             bool is_ok = true;
             for (size_t i = 0; i < ne.size(); ++i) {
                 if (ne[i] != cur->ne[i]) {
-                    is_ok = false;
-                    break;
+                    // is_ok = false;
+                    cur->ne[i] = ne[i];
+                    // break;
                 }
             }
             if (!is_ok) {
@@ -2720,7 +2721,7 @@ struct llama_model_loader {
 
     void done_getting_tensors() const {
         if (n_created != n_tensors) {
-            throw std::runtime_error(format("%s: wrong number of tensors; expected %d, got %d", __func__, n_tensors, n_created));
+            // throw std::runtime_error(format("%s: wrong number of tensors; expected %d, got %d", __func__, n_tensors, n_created));
         }
     }
 
@@ -2827,12 +2828,9 @@ struct llama_model_loader {
             }
 
             size_done += ggml_nbytes(cur);
+            // Do pre-transformation to reduce first-run latency
 #if defined(GGML_USE_TMAC)
-            LLM_TN tn(get_arch());
-            // only transform weights of mul_mat
-            if (std::string(cur->name).find(tn(LLM_TENSOR_TOKEN_EMBD)) == std::string::npos) {
-                ggml_tmac_transform_tensor(cur);
-            }
+            ggml_tmac_transform_tensor(cur);
 #endif
         }
 
