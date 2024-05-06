@@ -2615,6 +2615,9 @@ static bool test_backend(ggml_backend_t backend, test_mode mode, const char * op
     }
 
     if (mode == MODE_PERF) {
+        if (char * env_n_threads = getenv("TEST_BACKEND_OPS_N_THREADS")) {
+            ggml_backend_cpu_set_n_threads(backend, std::atoi(env_n_threads));
+        }
         for (auto & test : test_cases) {
             test->eval_perf(backend, op_name);
         }
