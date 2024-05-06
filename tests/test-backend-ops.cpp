@@ -1914,17 +1914,22 @@ static bool test_backend(ggml_backend_t backend, test_mode mode, const char * op
     std::vector<std::unique_ptr<test_case>> test_cases;
     std::default_random_engine rng(0);
 
+    // const ggml_type all_types[] = {
+    //     GGML_TYPE_F32, GGML_TYPE_F16,
+    //     GGML_TYPE_Q4_0, GGML_TYPE_Q4_1,
+    //     GGML_TYPE_Q5_0, GGML_TYPE_Q5_1,
+    //     GGML_TYPE_Q8_0,
+    //     GGML_TYPE_Q2_K, GGML_TYPE_Q3_K,
+    //     GGML_TYPE_Q4_K, GGML_TYPE_Q5_K,
+    //     GGML_TYPE_Q6_K,
+    //     GGML_TYPE_IQ2_XXS, GGML_TYPE_IQ2_XS,
+    //     GGML_TYPE_IQ3_XXS, GGML_TYPE_IQ1_S,
+    //     GGML_TYPE_IQ4_NL, GGML_TYPE_IQ3_S,
+    // };
     const ggml_type all_types[] = {
-        GGML_TYPE_F32, GGML_TYPE_F16,
-        GGML_TYPE_Q4_0, GGML_TYPE_Q4_1,
-        GGML_TYPE_Q5_0, GGML_TYPE_Q5_1,
-        GGML_TYPE_Q8_0,
-        GGML_TYPE_Q2_K, GGML_TYPE_Q3_K,
-        GGML_TYPE_Q4_K, GGML_TYPE_Q5_K,
-        GGML_TYPE_Q6_K,
-        GGML_TYPE_IQ2_XXS, GGML_TYPE_IQ2_XS,
-        GGML_TYPE_IQ3_XXS, GGML_TYPE_IQ1_S,
-        GGML_TYPE_IQ4_NL, GGML_TYPE_IQ3_S,
+        GGML_TYPE_Q2_K,
+        GGML_TYPE_Q3_K,
+        GGML_TYPE_Q4_0,
     };
 
     // unary ops
@@ -2036,10 +2041,13 @@ static bool test_backend(ggml_backend_t backend, test_mode mode, const char * op
 
     for (ggml_type type_a : all_types) {
         for (ggml_type type_b : {GGML_TYPE_F32}) {
-            test_cases.emplace_back(new test_mul_mat(type_a, type_b, 12288, 1,  4096, { 1,  1}, {1, 1}));
             test_cases.emplace_back(new test_mul_mat(type_a, type_b,  4096, 1,  4096, { 1,  1}, {1, 1}));
             test_cases.emplace_back(new test_mul_mat(type_a, type_b, 11008, 1,  4096, { 1,  1}, {1, 1}));
             test_cases.emplace_back(new test_mul_mat(type_a, type_b,  4096, 1, 11008, { 1,  1}, {1, 1}));
+            test_cases.emplace_back(new test_mul_mat(type_a, type_b,  1024, 1,  8192, { 1,  1}, {1, 1}));
+            test_cases.emplace_back(new test_mul_mat(type_a, type_b,  8192, 1,  8192, { 1,  1}, {1, 1}));
+            test_cases.emplace_back(new test_mul_mat(type_a, type_b, 28672, 1,  8192, { 1,  1}, {1, 1}));
+            test_cases.emplace_back(new test_mul_mat(type_a, type_b,  8192, 1, 28672, { 1,  1}, {1, 1}));
         }
     }
 
@@ -2154,7 +2162,9 @@ static bool test_backend(ggml_backend_t backend, test_mode mode, const char * op
     }
 
     if (mode == MODE_PERF) {
-        // ggml_backend_cpu_set_n_threads(backend, 16);
+        if (char * env_n_threads = getenv("TEST_BACKEND_OPS_N_THREADS")) {
+            ggml_backend_cpu_set_n_threads(backend, std::atoi(env_n_threads));
+        }
         for (auto & test : test_cases) {
             test->eval_perf(backend, op_name);
         }
