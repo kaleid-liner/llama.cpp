@@ -1145,6 +1145,12 @@ if (CMAKE_OSX_ARCHITECTURES      STREQUAL "arm64" OR
             # Raspberry Pi 3, 4, Zero 2 (32-bit)
             list(APPEND ARCH_FLAGS -mno-unaligned-access)
         endif()
+        if (${CMAKE_SYSTEM_PROCESSOR} MATCHES "aarch64" AND GGML_TMAC AND TMAC_FOUND)
+            # Jetson AGX Orin
+            # We need fullfp16 for T-MAC
+            # TODO: check_cxx_source_compiles
+            list(APPEND ARCH_FLAGS -march=armv8.2a+fp16)
+        endif()
         if (GGML_SVE)
             list(APPEND ARCH_FLAGS -march=armv8.6-a+sve)
         endif()
