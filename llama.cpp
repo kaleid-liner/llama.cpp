@@ -12584,7 +12584,7 @@ struct llm_tokenizer_bpe {
         }
 
         symbols = symbols_final;
-
+        auto vocab_size = vocab.id_to_token.size();
         if (!symbols.empty()) {
             for (int i = 0; i != -1; i = symbols[i].next) {
                 auto & symbol = symbols[i];
@@ -12605,8 +12605,12 @@ struct llm_tokenizer_bpe {
                         output.push_back((*token_multibyte).second);
                     }
                 } else {
-                    // change
-                    output.push_back((*token).second + 4);
+                    // change for bitnet
+                    if (vocab_size == 100287) {
+                        output.push_back((*token).second + 4);
+                    } else {
+                        output.push_back((*token).second);
+                    }
                 }
             }
         }
@@ -17776,25 +17780,61 @@ int32_t llama_token_to_piece(const struct llama_model * model, llama_token token
             break;
         }
         case LLAMA_VOCAB_TYPE_BPE: {
-            // change
-            if (token >=4) {
-                if (token >= 4) token = token - 4;
+            // fix for bitnet
+            if (model->vocab.id_to_token.size() == 100287){
+                if (token >=4) {
+                    token = token - 4;
+                    std::string result = model->vocab.id_to_token[token].text;
+                    result = llama_decode_text(result);
+                    if (length < (int) result.length()) {
+                        return -result.length();
+                    }
+                    memcpy(buf, result.c_str(), result.length());
+                    return result.length();
+                }
+                break;
+            }
+            // NOTE: we accept all unsupported token types,
+            // suppressing them like CONTROL tokens.
+            if (llama_is_normal_token(model->vocab, token)) {
                 std::string result = model->vocab.id_to_token[token].text;
                 result = llama_decode_text(result);
                 if (length < (int) result.length()) {
-                    return -result.length();
+                    return -(int) result.length();
                 }
                 memcpy(buf, result.c_str(), result.length());
                 return result.length();
-            } else if (token < 4) {
-                ;
-            } else {
-                // TODO: for now we accept all unsupported token types,
-                // suppressing them like CONTROL tokens.
-                // GGML_ASSERT(false);
+            } else if (
+                    (llama_is_user_defined_token(model->vocab, token)) ||
+                    (llama_is_control_token     (model->vocab, token) && special)) {
+                std::string result = model->vocab.id_to_token[token].text;
+                if (length < (int) result.length()) {
+                    return -(int) result.length();
+                }
+                memcpy(buf, result.c_str(), result.length());
+                return result.length();
             }
             break;
         }
+        //     // change
+        //     if (token >=4) {
+        //         if (token >= 4) token = token - 4;
+        //         std::string result = model->vocab.id_to_token[token].text;
+        //         result = llama_decode_text(result);
+        //         if (length < (int) result.length()) {
+        //             return -result.length();
+        //         }
+        //         memcpy(buf, result.c_str(), result.length());
+        //         return result.length();
+        //     } else if (token < 4) {
+        //         ;
+        //     } else {
+        //         // TODO: for now we accept all unsupported token types,
+        //         // suppressing them like CONTROL tokens.
+        //         // GGML_ASSERT(false);
+        //     }
+        //     break;
+        // }
         default:
             GGML_ASSERT(false);
         }
