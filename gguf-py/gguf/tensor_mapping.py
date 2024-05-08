@@ -370,6 +370,14 @@ class TensorNameMap:
             "model.layers.{bid}.out_proj",
             "backbone.layers.{bid}.mixer.out_proj",
         ),
+        
+        MODEL_TENSOR.ATTN_SUB_NORM: (
+            "layers.{bid}.attention.attn_sub_norm",  # persimmon
+        ),
+        
+        MODEL_TENSOR.FFN_SUB_NORM: (
+            "layers.{bid}.feed_forward.ffn_sub_norm",  # persimmon
+        ),
     }
 
     mapping: dict[str, tuple[MODEL_TENSOR, str]]

@@ -224,6 +224,7 @@ enum llm_arch {
     LLM_ARCH_COMMAND_R,
     LLM_ARCH_DBRX,
     LLM_ARCH_OLMO,
+    LLM_ARCH_BITNET,
     LLM_ARCH_UNKNOWN,
 };
 
@@ -260,6 +261,7 @@ static const std::map<llm_arch, const char *> LLM_ARCH_NAMES = {
     { LLM_ARCH_COMMAND_R,       "command-r"  },
     { LLM_ARCH_DBRX,            "dbrx"       },
     { LLM_ARCH_OLMO,            "olmo"       },
+    { LLM_ARCH_BITNET,          "bitnet"     },
     { LLM_ARCH_UNKNOWN,         "(unknown)"  },
 };
 
@@ -470,6 +472,8 @@ enum llm_tensor {
     LLM_TENSOR_SSM_A,
     LLM_TENSOR_SSM_D,
     LLM_TENSOR_SSM_OUT,
+    LLM_TENSOR_ATTN_SUB_NORM,
+    LLM_TENSOR_FFN_SUB_NORM,
 };
 
 static const std::map<llm_arch, std::map<llm_tensor, std::string>> LLM_TENSOR_NAMES = {
@@ -724,6 +728,25 @@ static const std::map<llm_arch, std::map<llm_tensor, std::string>> LLM_TENSOR_NA
             { LLM_TENSOR_FFN_UP,          "blk.%d.ffn_up" },
             { LLM_TENSOR_ATTN_Q_NORM,     "blk.%d.attn_q_norm" },
             { LLM_TENSOR_ATTN_K_NORM,     "blk.%d.attn_k_norm" },
+        },
+    },
+    {
+        LLM_ARCH_BITNET,
+        {
+            { LLM_TENSOR_TOKEN_EMBD,      "token_embd" },
+            { LLM_TENSOR_OUTPUT_NORM,     "output_norm" },
+            { LLM_TENSOR_OUTPUT,          "output" },
+            { LLM_TENSOR_ATTN_Q,          "blk.%d.attn_q" },
+            { LLM_TENSOR_ATTN_K,          "blk.%d.attn_k" },
+            { LLM_TENSOR_ATTN_V,          "blk.%d.attn_v" },
+            { LLM_TENSOR_ATTN_OUT,        "blk.%d.attn_output" },
+            { LLM_TENSOR_ATTN_NORM,       "blk.%d.attn_norm" },
+            { LLM_TENSOR_ATTN_SUB_NORM,   "blk.%d.attn_sub_norm" },
+            { LLM_TENSOR_FFN_GATE,        "blk.%d.ffn_gate" },
+            { LLM_TENSOR_FFN_DOWN,        "blk.%d.ffn_down" },
+            { LLM_TENSOR_FFN_UP,          "blk.%d.ffn_up" },
+            { LLM_TENSOR_FFN_NORM,        "blk.%d.ffn_norm" },
+            { LLM_TENSOR_FFN_SUB_NORM,    "blk.%d.ffn_sub_norm" },
         },
     },
     {
@@ -1955,6 +1978,7 @@ struct llama_layer {
     struct ggml_tensor * attn_k_norm_b;
     struct ggml_tensor * attn_out_norm;
     struct ggml_tensor * attn_out_norm_b;
+    struct ggml_tensor * attn_sub_norm;
 
     // attention
     struct ggml_tensor * wq;
@@ -1973,6 +1997,7 @@ struct llama_layer {
     // normalization
     struct ggml_tensor * ffn_norm;
     struct ggml_tensor * ffn_norm_b;
+    struct ggml_tensor * ffn_sub_norm;
     struct ggml_tensor * layer_out_norm;
     struct ggml_tensor * layer_out_norm_b;
 
@@ -4010,6 +4035,16 @@ static void llm_load_hparams(
                     default: model.type = e_model::MODEL_UNKNOWN;
                }
             } break;
+        case LLM_ARCH_BITNET:
+            {
+                ml.get_key(LLM_KV_ATTENTION_LAYERNORM_RMS_EPS, hparams.f_norm_rms_eps);
+
+                switch (hparams.n_layer) {
+                    case 32: model.type = e_model::MODEL_7B; break;
+                    case 40: model.type = e_model::MODEL_13B; break;
+                    default: model.type = e_model::MODEL_UNKNOWN;
+                }
+            } break;
         case LLM_ARCH_QWEN:
             {
                 ml.get_key(LLM_KV_ATTENTION_LAYERNORM_RMS_EPS, hparams.f_norm_rms_eps);
@@ -5364,6 +5399,42 @@ static bool llm_load_tensors(
                         layer.ffn_up   = ml.create_tensor(ctx_split, tn(LLM_TENSOR_FFN_UP,   "weight", i), {n_embd,   n_ff});
                     }
                 } break;
+            case LLM_ARCH_BITNET:
+                {
+                    int bitnet_n_vocab = 100287;
+                    model.tok_embd = ml.create_tensor(ctx_input, tn(LLM_TENSOR_TOKEN_EMBD, "weight"), {n_embd, bitnet_n_vocab});
+
+                    // output
+                    {
+                        model.output_norm = ml.create_tensor(ctx_output,       tn(LLM_TENSOR_OUTPUT_NORM, "weight"), {n_embd});
+                        model.output      = ml.create_tensor(ctx_output_split, tn(LLM_TENSOR_OUTPUT,      "weight"), {n_embd, bitnet_n_vocab});
+                    }
+
+                    const uint32_t n_ff = hparams.n_ff;
+                    model.layers.resize(n_layer);
+
+                    for (int i = 0; i < n_layer; ++i) {
+                        ggml_context * ctx_layer = ctx_for_layer(i);
+                        ggml_context * ctx_split = ctx_for_layer_split(i);
+
+                        auto & layer = model.layers[i];
+
+                        layer.attn_norm = ml.create_tensor(ctx_layer, tn(LLM_TENSOR_ATTN_NORM, "weight", i), {n_embd});
+                        layer.attn_sub_norm = ml.create_tensor(ctx_layer, tn(LLM_TENSOR_ATTN_SUB_NORM, "weight", i), {n_embd});
+
+                        layer.wq = ml.create_tensor(ctx_split, tn(LLM_TENSOR_ATTN_Q, "weight", i), {n_embd, n_embd});
+                        layer.wk = ml.create_tensor(ctx_split, tn(LLM_TENSOR_ATTN_K, "weight", i), {n_embd, n_embd_gqa});
+                        layer.wv = ml.create_tensor(ctx_split, tn(LLM_TENSOR_ATTN_V, "weight", i), {n_embd, n_embd_gqa});
+                        layer.wo = ml.create_tensor(ctx_split, tn(LLM_TENSOR_ATTN_OUT, "weight", i), {n_embd, n_embd});
+
+                        layer.ffn_norm = ml.create_tensor(ctx_layer, tn(LLM_TENSOR_FFN_NORM, "weight", i), {n_embd});
+                        layer.ffn_sub_norm = ml.create_tensor(ctx_layer, tn(LLM_TENSOR_FFN_SUB_NORM, "weight", i), {n_ff});
+
+                        layer.ffn_gate = ml.create_tensor(ctx_split, tn(LLM_TENSOR_FFN_GATE, "weight", i), {n_embd, n_ff});
+                        layer.ffn_down = ml.create_tensor(ctx_split, tn(LLM_TENSOR_FFN_DOWN, "weight", i), {n_ff, n_embd});
+                        layer.ffn_up   = ml.create_tensor(ctx_split, tn(LLM_TENSOR_FFN_UP,   "weight", i), {n_embd, n_ff});
+                    }
+                } break;
             case LLM_ARCH_QWEN:
                 {
                     model.tok_embd = ml.create_tensor(ctx_input, tn(LLM_TENSOR_TOKEN_EMBD, "weight"), {n_embd, n_vocab});
@@ -6292,6 +6363,20 @@ static struct ggml_tensor * llm_build_norm(
     return cur;
 }
 
+// for bitnet
+static struct ggml_tensor * quant_bitlinear(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * cur,
+        bool isbitnet = true)
+    {
+        if (isbitnet)
+        {
+            return ggml_bitlinear_quant(ctx, cur);
+        }
+
+        return cur;
+    }
+
 static struct ggml_tensor * llm_build_ffn(
         struct ggml_context * ctx,
          struct ggml_tensor * cur,
@@ -6305,7 +6390,12 @@ static struct ggml_tensor * llm_build_ffn(
             llm_ffn_op_type   type_op,
           llm_ffn_gate_type   type_gate,
          const llm_build_cb & cb,
-                        int   il) {
+                        int   il,
+        const llama_hparams & hparams = llama_hparams(),
+         struct ggml_tensor * ffn_sub_norm = nullptr,
+         bool isbitnet = false
+                        ) {
+    cur = quant_bitlinear(ctx, cur);
     struct ggml_tensor * tmp = ggml_mul_mat(ctx, up, cur);
     cb(tmp, "ffn_up", il);
 
@@ -6371,6 +6461,17 @@ static struct ggml_tensor * llm_build_ffn(
         cb(cur, "ffn_gate_par", il);
     }
 
+    // N2 & B4
+    // N2 for silu(x1) * x3
+    if (isbitnet)
+    {
+        cur = llm_build_norm(ctx, cur, hparams,
+                        ffn_sub_norm, NULL,
+                        LLM_NORM_RMS, cb, il);
+        cb(cur, "ffn_sub_norm", il);
+    }
+    // B4 for w2
+    cur = quant_bitlinear(ctx, cur);
     cur = ggml_mul_mat(ctx, down, cur);
     if (down_b) {
         cb(cur, "ffn_down", il);
@@ -6493,7 +6594,10 @@ static struct ggml_tensor * llm_build_kqv(
                     int32_t   n_kv,
                     float     kq_scale,
          const llm_build_cb & cb,
-                    int       il) {
+                    int       il,
+         struct ggml_tensor * attn_sub_norm = nullptr,
+                    bool      isbitnet = false
+                    ) {
     const int64_t n_ctx         = cparams.n_ctx;
     const int64_t n_head        = hparams.n_head;
     const int64_t n_head_kv     = hparams.n_head_kv;
@@ -6605,6 +6709,18 @@ static struct ggml_tensor * llm_build_kqv(
         cur = ggml_cont_2d(ctx, kqv_merged, n_embd_head_k*n_head, n_tokens);
         cb(cur, "kqv_merged_cont", il);
     }
+    
+    // B2 & N1
+    // N1 for output
+    if (isbitnet)
+    {
+        cur = llm_build_norm(ctx, cur, hparams,
+                        attn_sub_norm, NULL,
+                        LLM_NORM_RMS, cb, il);
+        cb(cur, "attn_sub_norm", il);
+    }
+    // B2 for wo
+    cur = quant_bitlinear(ctx, cur);
 
     ggml_build_forward_expand(graph, cur);
 
@@ -8727,6 +8843,132 @@ struct llm_build_context {
         return gf;
     }
 
+    struct ggml_cgraph * build_bitnet() {
+        struct ggml_cgraph * gf = ggml_new_graph_custom(ctx0, LLAMA_MAX_NODES, false);
+        bool isbitnet = true;
+
+        const int64_t n_embd_head = hparams.n_embd_head_v;
+        GGML_ASSERT(n_embd_head == hparams.n_embd_head_k);
+
+        struct ggml_tensor * cur;
+        struct ggml_tensor * inpL;
+
+        inpL = llm_build_inp_embd(ctx0, lctx, hparams, batch, model.tok_embd, cb);
+
+        // inp_pos - contains the positions
+        struct ggml_tensor * inp_pos = build_inp_pos();
+
+        // KQ_mask (mask for 1 head, it will be broadcasted to all heads)
+        struct ggml_tensor * KQ_mask = build_inp_KQ_mask();
+
+        for (int il = 0; il < n_layer; ++il) {
+            struct ggml_tensor * inpSA = inpL;
+
+            cur = llm_build_norm(ctx0, inpL, hparams,
+                    model.layers[il].attn_norm, NULL,
+                    LLM_NORM_RMS, cb, il);
+            cb(cur, "attn_norm", il);
+
+            // self-attention
+            {
+                // compute Q and K and RoPE them
+                // B1.Q
+                cur = quant_bitlinear(ctx0, cur, isbitnet);
+                struct ggml_tensor * Qcur = ggml_mul_mat(ctx0, model.layers[il].wq, cur);
+                cb(Qcur, "Qcur", il);
+                if (model.layers[il].bq) {
+                    Qcur = ggml_add(ctx0, Qcur, model.layers[il].bq);
+                    cb(Qcur, "Qcur", il);
+                }
+
+                // B1.K
+                struct ggml_tensor * Kcur = ggml_mul_mat(ctx0, model.layers[il].wk, cur);
+                cb(Kcur, "Kcur", il);
+                if (model.layers[il].bk) {
+                    Kcur = ggml_add(ctx0, Kcur, model.layers[il].bk);
+                    cb(Kcur, "Kcur", il);
+                }
+
+                // B1.V
+                struct ggml_tensor * Vcur = ggml_mul_mat(ctx0, model.layers[il].wv, cur);
+                cb(Vcur, "Vcur", il);
+                if (model.layers[il].bv) {
+                    Vcur = ggml_add(ctx0, Vcur, model.layers[il].bv);
+                    cb(Vcur, "Vcur", il);
+                }
+
+                Qcur = ggml_rope_custom(
+                    ctx0, ggml_reshape_3d(ctx0, Qcur, n_embd_head, n_head,    n_tokens), inp_pos,
+                    n_embd_head, 0, 0, n_orig_ctx, freq_base, freq_scale,
+                    ext_factor, attn_factor, beta_fast, beta_slow
+                );
+                cb(Qcur, "Qcur", il);
+
+                Kcur = ggml_rope_custom(
+                    ctx0, ggml_reshape_3d(ctx0, Kcur, n_embd_head, n_head_kv, n_tokens), inp_pos,
+                    n_embd_head, 0, 0, n_orig_ctx, freq_base, freq_scale,
+                    ext_factor, attn_factor, beta_fast, beta_slow
+                );
+                cb(Kcur, "Kcur", il);
+
+                llm_build_kv_store(ctx0, hparams, cparams, kv_self, gf, Kcur, Vcur, n_tokens, kv_head, cb, il);
+
+                cur = llm_build_kqv(ctx0, model, hparams, cparams, kv_self, gf,
+                        model.layers[il].wo, model.layers[il].bo, 
+                        Qcur, KQ_mask, nullptr, n_tokens, n_kv, 1.0f/sqrtf(float(n_embd_head)), cb, il,
+                        model.layers[il].attn_sub_norm, isbitnet);
+                cb(cur, "kqv_out", il);
+            }
+
+            if (il == n_layer - 1) {
+                // skip computing output for unused tokens
+                struct ggml_tensor * inp_out_ids = build_inp_out_ids();
+                cur   = ggml_get_rows(ctx0,   cur, inp_out_ids);
+                inpSA = ggml_get_rows(ctx0, inpSA, inp_out_ids);
+            }
+
+            struct ggml_tensor * ffn_inp = ggml_add(ctx0, cur, inpSA);
+            cb(ffn_inp, "ffn_inp", il);
+
+            // feed-forward forward
+            if (model.layers[il].ffn_gate_inp == nullptr) {
+                cur = llm_build_norm(ctx0, ffn_inp, hparams,
+                        model.layers[il].ffn_norm, NULL,
+                        LLM_NORM_RMS, cb, il);
+                cb(cur, "ffn_norm", il);
+
+                cur = llm_build_ffn(ctx0, cur,
+                        model.layers[il].ffn_up,   NULL,
+                        model.layers[il].ffn_gate, NULL,
+                        model.layers[il].ffn_down, NULL,
+                        NULL,
+                        LLM_FFN_SILU, LLM_FFN_PAR, cb, il, hparams, model.layers[il].ffn_sub_norm, isbitnet);
+                cb(cur, "ffn_out", il);
+            }
+
+            cur = ggml_add(ctx0, cur, ffn_inp);
+            cb(cur, "l_out", il);
+
+            // input for next layer
+            inpL = cur;
+        }
+
+        cur = inpL;
+
+        cur = llm_build_norm(ctx0, cur, hparams,
+                model.output_norm, NULL,
+                LLM_NORM_RMS, cb, -1);
+        cb(cur, "result_norm", -1);
+
+        // lm_head
+        cur = ggml_mul_mat(ctx0, model.output, cur);
+        cb(cur, "result_output", -1);
+
+        ggml_build_forward_expand(gf, cur);
+
+        return gf;
+    }
+
     struct ggml_cgraph * build_qwen() {
         struct ggml_cgraph * gf = ggml_new_graph_custom(ctx0, LLAMA_MAX_NODES, false);
 
@@ -10776,7 +11018,7 @@ static struct ggml_cgraph * llama_build_graph(
             }
         }
     };
-
+    // LLAMA_LOG_INFO("debug backend\n");
     struct ggml_cgraph * result = NULL;
 
     struct llm_build_context llm(lctx, batch, cb, worst_case);
@@ -10828,6 +11070,10 @@ static struct ggml_cgraph * llama_build_graph(
          case LLM_ARCH_STABLELM:
             {
                 result = llm.build_stablelm();
+            } break;
+        case LLM_ARCH_BITNET:
+            {
+                result = llm.build_bitnet();
             } break;
         case LLM_ARCH_QWEN:
             {
@@ -12359,7 +12605,8 @@ struct llm_tokenizer_bpe {
                         output.push_back((*token_multibyte).second);
                     }
                 } else {
-                    output.push_back((*token).second);
+                    // change
+                    output.push_back((*token).second + 4);
                 }
             }
         }
@@ -15805,6 +16052,7 @@ enum llama_rope_type llama_rope_type(const struct llama_model * model) {
         case LLM_ARCH_BERT:
         case LLM_ARCH_NOMIC_BERT:
         case LLM_ARCH_STABLELM:
+        case LLM_ARCH_BITNET:
         case LLM_ARCH_QWEN:
         case LLM_ARCH_QWEN2:
         case LLM_ARCH_QWEN2MOE:
@@ -17528,25 +17776,22 @@ int32_t llama_token_to_piece(const struct llama_model * model, llama_token token
             break;
         }
         case LLAMA_VOCAB_TYPE_BPE: {
-            // NOTE: we accept all unsupported token types,
-            // suppressing them like CONTROL tokens.
-            if (llama_is_normal_token(model->vocab, token)) {
+            // change
+            if (token >=4) {
+                if (token >= 4) token = token - 4;
                 std::string result = model->vocab.id_to_token[token].text;
                 result = llama_decode_text(result);
                 if (length < (int) result.length()) {
-                    return -(int) result.length();
+                    return -result.length();
                 }
                 memcpy(buf, result.c_str(), result.length());
                 return result.length();
-            } else if (
-                    (llama_is_user_defined_token(model->vocab, token)) ||
-                    (llama_is_control_token     (model->vocab, token) && special)) {
-                std::string result = model->vocab.id_to_token[token].text;
-                if (length < (int) result.length()) {
-                    return -(int) result.length();
-                }
-                memcpy(buf, result.c_str(), result.length());
-                return result.length();
+            } else if (token < 4) {
+                ;
+            } else {
+                // TODO: for now we accept all unsupported token types,
+                // suppressing them like CONTROL tokens.
+                // GGML_ASSERT(false);
             }
             break;
         }
