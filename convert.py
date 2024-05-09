@@ -72,7 +72,6 @@ class UnquantizedDataType(DataType):
 
 DT_F16  = UnquantizedDataType('F16',  dtype = np.dtype(np.float16), valid_conversions = ['F32', 'Q8_0'])
 DT_F32  = UnquantizedDataType('F32',  dtype = np.dtype(np.float32), valid_conversions = ['F16', 'Q8_0', 'I2'])
-DT_I2   = UnquantizedDataType('I2',   dtype = np.dtype(np.uint8),    valid_conversions = ['F32', 'F16'])
 DT_I32  = UnquantizedDataType('I32',  dtype = np.dtype(np.int16),   valid_conversions = [])
 DT_BF16 = UnquantizedDataType('BF16', dtype = np.dtype(np.uint16),  valid_conversions = ['F32', 'F16', 'Q8_0'])
 
@@ -128,12 +127,18 @@ class I2TransformedDataType(TransformedDataType):
         # Much faster implementation of block quantization contributed by @Cebtenzzre
 
         def transform_to_i2(x : NDArray) -> Iterable[tuple[Any, Any]]:
+            # print(x)
             x_num = np.prod(x.shape)
             x = np.reshape(x, x_num)
+            d = 1
+            for i in range(x_num):
+                if x[i] != 0:
+                    d = x[i]
+            x = np.divide(x, d)
             group_num = x_num // 4
             vec = []
             for group in range(group_num):
-                temp = np.array(0).astype(np.int8)
+                temp = np.array(0).astype(np.uint8)
                 for num in range(4):
                     if (x[group * 4 + num] == 1):
                         temp = np.left_shift(temp, 1)
@@ -148,14 +153,21 @@ class I2TransformedDataType(TransformedDataType):
                     else :
                         temp = np.left_shift(temp, 2)
                 vec.append(temp)
-            res = np.array(vec).astype(np.uint8)
-        return np.fromiter(quantize_blocks_q8_0(blocks), count = n_blocks, dtype = self.quantized_dtype)
+            ans = np.array(vec).astype(np.uint8)
+            # print(ans)
+            return ans
+        return transform_to_i2(arr)
 
 
 DT_Q8_0 = Q8_0QuantizedDataType('Q8_0',
                                 dtype = np.dtype(np.float32), valid_conversions = [],
                                 ggml_type = gguf.GGMLQuantizationType.Q8_0, block_size = 32,
                                 quantized_dtype = np.dtype([('d', '<f2'), ('qs', 'i1', (32,))]))
+
+DT_I2 = I2TransformedDataType('I2',
+                              dtype = np.dtype(np.float32), valid_conversions = [],
+                              transformed_dtype = np.uint8
+                              )
 
 # Quantized types skipped here because they may also map to np.float32
 NUMPY_TYPE_TO_DATA_TYPE: dict[np.dtype[Any], DataType] = {}
@@ -1192,11 +1204,11 @@ class OutputFile:
         raw_dtype = getattr(tensor.data_type, 'ggml_type', None)
         data_type = getattr(tensor.data_type, 'quantized_type', None) or tensor.data_type.dtype
         data_nbytes = tensor.data_type.elements_to_bytes(n_elements)
-        print(name)
-        print(tensor.shape)
-        print(data_type)
-        print(data_nbytes)
-        print(raw_dtype)
+        # print(name)
+        # print(tensor.shape)
+        # print(data_type)
+        # print(data_nbytes)
+        # print(raw_dtype)
         self.gguf.add_tensor_info(name, tensor.shape, data_type, data_nbytes, raw_dtype=raw_dtype)
 
     def write_meta(self) -> None:
@@ -1213,6 +1225,9 @@ class OutputFile:
                 OutputFile.maybe_do_quantize, ndarrays_inner, concurrency=concurrency, max_workers=concurrency,
                 use_processpool_executor=True,
             )
+        elif ftype == GGMLFileType.MostlyI2:
+            ndarrays = bounded_parallel_map(
+                OutputFile.maybe_do_transform, ndarrays_inner, concurrency=concurrency, max_workers=concurrency, use_processpool_executor=True,)
         else:
             ndarrays = map(OutputFile.maybe_do_quantize, ndarrays_inner)
 
@@ -1253,6 +1268,9 @@ class OutputFile:
     @staticmethod
     def do_item(item: tuple[str, LazyTensor]) -> tuple[DataType, NDArray]:
         name, lazy_tensor = item
+        print(name)
+        print(lazy_tensor.data_type)
+        print(lazy_tensor.shape)
         tensor = lazy_tensor.load().to_ggml()
         return (lazy_tensor.data_type, tensor.ndarray)
 
@@ -1262,6 +1280,13 @@ class OutputFile:
         if not isinstance(dt, QuantizedDataType):
             return arr
         return dt.quantize(arr)
+
+    @staticmethod
+    def maybe_do_transform(item: tuple[DataType, NDArray]) -> NDArray:
+        dt, arr = item
+        if not isinstance(dt, TransformedDataType):
+            return arr
+        return dt.transform(arr)
 
     @staticmethod
     def write_all(

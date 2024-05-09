@@ -227,6 +227,8 @@ class GGUFWriter:
                 dtype = GGMLQuantizationType.I32
             elif tensor_dtype == np.int64:
                 dtype = GGMLQuantizationType.I64
+            elif tensor_dtype == np.uint8:
+                dtype = GGMLQuantizationType.I2
             else:
                 raise ValueError("Only F16, F32, F64, I8, I16, I32, I64 tensors are supported for now")
         else:
@@ -268,6 +270,7 @@ class GGUFWriter:
 
         if self.endianess == GGUFEndian.BIG:
             tensor.byteswap(inplace=True)
+        print(tensor)
         self.write_padding(self.fout, self.fout.tell())
         tensor.tofile(self.fout)
         self.write_padding(self.fout, tensor.nbytes)
