@@ -665,6 +665,12 @@ static void ggml_vec_dot_f16(int n, float * restrict s, size_t bs, ggml_fp16_t *
 static void ggml_vec_dot_bf16(int n, float * restrict s, size_t bs, ggml_bf16_t * restrict x, size_t bx, ggml_bf16_t * restrict y, size_t by, int nrc);
 
 static const ggml_type_traits_t type_traits[GGML_TYPE_COUNT] = {
+    [GGML_TYPE_I2] = {
+        .type_name                = "i2",
+        .blck_size                = 1,
+        .type_size                = sizeof(uint8_t) / 4,
+        .is_quantized             = false,
+    },
     [GGML_TYPE_I8] = {
         .type_name                = "i8",
         .blck_size                = 1,

@@ -73,7 +73,8 @@ class UnquantizedDataType(DataType):
 
 
 DT_F16  = UnquantizedDataType('F16',  dtype = np.dtype(np.float16), valid_conversions = ['F32', 'Q8_0'])
-DT_F32  = UnquantizedDataType('F32',  dtype = np.dtype(np.float32), valid_conversions = ['F16', 'Q8_0'])
+DT_F32  = UnquantizedDataType('F32',  dtype = np.dtype(np.float32), valid_conversions = ['F16', 'Q8_0', 'I2'])
+DT_I2   = UnquantizedDataType('I2',   dtype = np.dtype(np.uint8),    valid_conversions = ['F32', 'F16'])
 DT_I32  = UnquantizedDataType('I32',  dtype = np.dtype(np.int16),   valid_conversions = [])
 DT_BF16 = UnquantizedDataType('BF16', dtype = np.dtype(np.uint16),  valid_conversions = ['F32', 'F16', 'Q8_0'])
 
@@ -110,6 +111,48 @@ class Q8_0QuantizedDataType(QuantizedDataType):
             yield from zip(d, qs)
         return np.fromiter(quantize_blocks_q8_0(blocks), count = n_blocks, dtype = self.quantized_dtype)
 
+@dataclass(frozen=True)
+class TransformedDataType(DataType):
+    transformed_dtype: np.dtype[Any]
+
+    def transform(self, arr: NDArray) -> NDArray:
+        raise NotImplementedError(f'Transformation for {self.name} not implemented')
+
+    def elements_to_bytes(self, n_elements: int) -> int:
+        return n_elements * self.dtype.itemsize // 4
+
+
+@dataclass(frozen=True)
+class I2TransformedDataType(TransformedDataType):
+    # fp32 -> int2 (dtype is uint8)
+    def transform(self, arr: NDArray) -> NDArray:
+        assert(np.prod(arr.shape) % 4 == 0)
+        # Much faster implementation of block quantization contributed by @Cebtenzzre
+
+        def transform_to_i2(x : NDArray) -> Iterable[tuple[Any, Any]]:
+            x_num = np.prod(x.shape)
+            x = np.reshape(x, x_num)
+            group_num = x_num // 4
+            vec = []
+            for group in range(group_num):
+                temp = np.array(0).astype(np.int8)
+                for num in range(4):
+                    if (x[group * 4 + num] == 1):
+                        temp = np.left_shift(temp, 1)
+                        temp = np.bitwise_or(temp, 0)
+                        temp = np.left_shift(temp, 1)
+                        temp = np.bitwise_or(temp, 1)
+                    elif (x[group * 4 + num] == -1):
+                        temp = np.left_shift(temp, 1)
+                        temp = np.bitwise_or(temp, 1)
+                        temp = np.left_shift(temp, 1)
+                        temp = np.bitwise_or(temp, 1)
+                    else :
+                        temp = np.left_shift(temp, 2)
+                vec.append(temp)
+            res = np.array(vec).astype(np.uint8)
+        return np.fromiter(quantize_blocks_q8_0(blocks), count = n_blocks, dtype = self.quantized_dtype)
+
 
 DT_Q8_0 = Q8_0QuantizedDataType('Q8_0',
                                 dtype = np.dtype(np.float32), valid_conversions = [],
@@ -138,6 +181,7 @@ SAFETENSORS_DATA_TYPES: dict[str, DataType] = {
 class GGMLFileType(enum.IntEnum):
     AllF32     = 0
     MostlyF16  = 1  # except 1d tensors
+    MostlyI2   = 2  # except 1d tensors
     MostlyQ8_0 = 7  # except 1d tensors
 
     def type_for_tensor(self, name: str, tensor: LazyTensor) -> DataType:
@@ -146,12 +190,16 @@ class GGMLFileType(enum.IntEnum):
             raise ValueError(self)
         # Convert all 1D tensors to F32.  Most of the codebase that takes in 1D tensors only handles F32 tensors, and most of the outputs tensors are F32.
         #  Also The 1d tensors aren't much of a performance/size issue.  So instead of having to have separate F32 and F16 implementations of both, just convert everything to F32 for now.
-        return dt if len(tensor.shape) > 1 else DT_F32
+        dt = dt if len(tensor.shape) > 1 else DT_F32
+        if name == "token_embd.weight" or name == "output.weight":
+            dt = DT_F32
+        return dt
 
 
 GGML_FILE_TYPE_TO_DATA_TYPE: dict[GGMLFileType, DataType] = {
     GGMLFileType.AllF32    : DT_F32,
     GGMLFileType.MostlyF16 : DT_F16,
+    GGMLFileType.MostlyI2  : DT_I2,
     GGMLFileType.MostlyQ8_0: DT_Q8_0,
 }
 
@@ -1036,6 +1084,8 @@ def pick_output_type(model: LazyModel, output_type_str: str | None) -> GGMLFileT
         return GGMLFileType.MostlyF16
     if output_type_str == "q8_0":
         return GGMLFileType.MostlyQ8_0
+    if output_type_str == "i2":
+        return GGMLFileType.MostlyI2
 
     name_to_type = {name: lazy_tensor.data_type for (name, lazy_tensor) in model.items()}
 
@@ -1260,6 +1310,7 @@ def default_convention_outfile(file_type: GGMLFileType, expert_count: int | None
         GGMLFileType.AllF32:    "F32",
         GGMLFileType.MostlyF16: "F16",
         GGMLFileType.MostlyQ8_0: "Q8_0",
+        GGMLFileType.MostlyI2:  "I2",
     }[file_type]
 
     return gguf.naming_convention(name, basename, finetune, version, size_label, output_type)
@@ -1285,7 +1336,7 @@ def do_dump_model(model_plus: ModelPlus) -> None:
 
 
 def main(args_in: list[str] | None = None) -> None:
-    output_choices = ["f32", "f16"]
+    output_choices = ["f32", "f16", "i2"]
     if np.uint32(1) == np.uint32(1).newbyteorder("<"):
         # We currently only support Q8_0 output on little endian systems.
         output_choices.append("q8_0")
@@ -1376,6 +1427,7 @@ def main(args_in: list[str] | None = None) -> None:
                 "f32": GGMLFileType.AllF32,
                 "f16": GGMLFileType.MostlyF16,
                 "q8_0": GGMLFileType.MostlyQ8_0,
+                "i2": GGMLFileType.MostlyI2,
             }[args.outtype]
 
         logger.info(f"params = {params}")
