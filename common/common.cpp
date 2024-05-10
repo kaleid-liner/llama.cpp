@@ -2267,7 +2267,11 @@ std::tuple<struct llama_model *, struct llama_context *> llama_init_from_gpt_par
         return std::make_tuple(nullptr, nullptr);
     }
 
+    printf("llama_load_model_finish\n");
+
     auto cparams = llama_context_params_from_gpt_params(params);
+
+    printf("cparams_load_finish\n");
 
     llama_context * lctx = llama_new_context_with_model(model, cparams);
     if (lctx == NULL) {
@@ -2275,6 +2279,8 @@ std::tuple<struct llama_model *, struct llama_context *> llama_init_from_gpt_par
         llama_free_model(model);
         return std::make_tuple(nullptr, nullptr);
     }
+
+    printf("llama_context_finish\n");
 
     if (!params.control_vectors.empty()) {
         if (params.control_vector_layer_start <= 0) params.control_vector_layer_start = 1;
@@ -2299,6 +2305,7 @@ std::tuple<struct llama_model *, struct llama_context *> llama_init_from_gpt_par
             return std::make_tuple(nullptr, nullptr);
         }
     }
+    printf("llama_apply_finish\n");
 
     for (unsigned int i = 0; i < params.lora_adapter.size(); ++i) {
         const std::string & lora_adapter = std::get<0>(params.lora_adapter[i]);
@@ -2317,21 +2324,28 @@ std::tuple<struct llama_model *, struct llama_context *> llama_init_from_gpt_par
             return std::make_tuple(nullptr, nullptr);
         }
     }
+    printf("llama_lora_finish\n");
 
     if (params.ignore_eos) {
         params.sparams.logit_bias[llama_token_eos(model)] = -INFINITY;
     }
+    printf("llama_eos_finish\n");
 
     if (params.warmup) {
+        printf("llama enter warmup\n");
         LOG("warming up the model with an empty run\n");
 
         std::vector<llama_token> tmp = { llama_token_bos(model), llama_token_eos(model), };
-        llama_decode(lctx, llama_batch_get_one(tmp.data(), std::min(tmp.size(), (size_t) params.n_batch), 0, 0));
+        printf("after bos\n");
+        auto batch = llama_batch_get_one(tmp.data(), std::min(tmp.size(), (size_t) params.n_batch), 0, 0);
+        printf("after get batch\n");
+        llama_decode(lctx, batch);
+        printf("after decode\n");
         llama_kv_cache_clear(lctx);
         llama_synchronize(lctx);
         llama_reset_timings(lctx);
     }
-
+    printf("llama init from gpt finish\n");
     return std::make_tuple(model, lctx);
 }
 

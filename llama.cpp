@@ -3042,8 +3042,14 @@ struct llama_model_loader {
 
         llama_tensor_weight(const llama_file * file, uint16_t idx, const char * name, const struct gguf_context * gguf_ctx, ggml_tensor * tensor) : idx(idx), tensor(tensor) {
             const int tensor_idx = gguf_find_tensor(gguf_ctx, name);
+            // printf("find_tensor\n");
+            // printf("idx:%d\n", tensor_idx);
+            // printf("name:%s\n", name);
+            // printf("data_offset:%ld\n", gguf_get_data_offset(gguf_ctx));
+            // printf("tensor_offset:%ld\n", gguf_get_tensor_offset(gguf_ctx, tensor_idx));
             offs = gguf_get_data_offset(gguf_ctx) + gguf_get_tensor_offset(gguf_ctx, tensor_idx);
-
+            // printf("offs:%ld\n", offs);
+            // printf("bytes:%d\n", ggml_nbytes(tensor));
             if (offs + ggml_nbytes(tensor) < offs || offs + ggml_nbytes(tensor) > file->size) {
                 throw std::runtime_error(format("tensor '%s' data is not within the file bounds, model is corrupted or incomplete", name));
             }
@@ -3219,6 +3225,7 @@ struct llama_model_loader {
                 case GGML_TYPE_IQ4_NL:  ftype = LLAMA_FTYPE_MOSTLY_IQ4_NL;  break;
                 case GGML_TYPE_IQ4_XS:  ftype = LLAMA_FTYPE_MOSTLY_IQ4_XS;  break;
                 case GGML_TYPE_IQ3_S:   ftype = LLAMA_FTYPE_MOSTLY_IQ3_S;   break;
+                case GGML_TYPE_I2   :   ftype = LLAMA_FTYPE_MOSTLY_I2    ;   break;
                 default:
                     {
                         LLAMA_LOG_WARN("%s: unknown type %s\n", __func__, ggml_type_name(type_max));
@@ -3698,6 +3705,7 @@ static std::string llama_model_ftype_name(llama_ftype ftype) {
         case LLAMA_FTYPE_MOSTLY_Q5_0: return "Q5_0";
         case LLAMA_FTYPE_MOSTLY_Q5_1: return "Q5_1";
         case LLAMA_FTYPE_MOSTLY_Q8_0: return "Q8_0";
+        case LLAMA_FTYPE_MOSTLY_I2  : return "I2";
 
         // K-quants
         case LLAMA_FTYPE_MOSTLY_Q2_K:   return "Q2_K - Medium";
@@ -6223,6 +6231,7 @@ static int llama_model_load(const std::string & fname, llama_model & model, llam
         )) {
             return -2;
         }
+        printf("model all load\n");
     } catch (const std::exception & err) {
         LLAMA_LOG_ERROR("%s: error loading model: %s\n", __func__, err.what());
         return -1;
@@ -11698,9 +11707,9 @@ static int llama_decode_internal(
 
         ggml_backend_sched_reset(lctx.sched);
         ggml_backend_sched_set_eval_callback(lctx.sched, lctx.cparams.cb_eval, lctx.cparams.cb_eval_user_data);
-
+        printf("ggml before graph\n");
         ggml_cgraph * gf = llama_build_graph(lctx, u_batch, false);
-
+        printf("ggml after graph\n");
         // the output is always the last tensor in the graph
         struct ggml_tensor * res  = gf->nodes[gf->n_nodes - 1];
         struct ggml_tensor * embd = gf->nodes[gf->n_nodes - 2];
@@ -11753,9 +11762,9 @@ static int llama_decode_internal(
         ggml_backend_sched_alloc_graph(lctx.sched, gf);
 
         llama_set_inputs(lctx, u_batch);
-
+        printf("ggml before compute\n");
         llama_graph_compute(lctx, gf, n_threads);
-
+        printf("ggml after compute\n");
         // update the kv ring buffer
         {
             kv_self.head += n_tokens;
@@ -14800,6 +14809,7 @@ static void llama_model_quantize_internal(const std::string & fname_inp, const s
         case LLAMA_FTYPE_MOSTLY_Q8_0: default_type = GGML_TYPE_Q8_0; break;
         case LLAMA_FTYPE_MOSTLY_F16:  default_type = GGML_TYPE_F16;  break;
         case LLAMA_FTYPE_ALL_F32:     default_type = GGML_TYPE_F32;  break;
+        case LLAMA_FTYPE_MOSTLY_I2  : default_type = GGML_TYPE_I2; break;
 
         // K-quants
         case LLAMA_FTYPE_MOSTLY_Q2_K_S:

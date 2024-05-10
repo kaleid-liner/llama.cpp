@@ -1,7 +1,7 @@
 import numpy as np
-x = np.array([[1.0, 0.0, -1.0, -0.0, -1.0, 1.0, -0.0, -0.0],[1.0, -0.0, 1.0, -0.0, 1.0, -1.0, 1.0, -0.0]]).astype(np.float16)
+x = np.random.randn(10240, 3200)
 
-print(x)
+# print(x)
 x = x.astype(np.uint8)
 assert(np.prod(x.shape) % 4 == 0)
 
