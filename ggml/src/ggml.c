@@ -668,7 +668,7 @@ static const ggml_type_traits_t type_traits[GGML_TYPE_COUNT] = {
     [GGML_TYPE_I2] = {
         .type_name                = "i2",
         .blck_size                = 1,
-        .type_size                = sizeof(uint8_t) / 4,
+        .type_size                = sizeof(int8_t),
         .is_quantized             = false,
     },
     [GGML_TYPE_I8] = {
@@ -3333,6 +3333,10 @@ GGML_CALL size_t ggml_nbytes(const struct ggml_tensor * tensor) {
         nbytes = ggml_type_size(tensor->type);
         for (int i = 0; i < GGML_MAX_DIMS; ++i) {
             nbytes += (tensor->ne[i] - 1)*tensor->nb[i];
+        }
+
+        if(tensor->type == GGML_TYPE_I2){
+            nbytes = nbytes / 4;
         }
     }
     else {

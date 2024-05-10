@@ -4452,6 +4452,7 @@ struct llama_model_loader {
                 case GGML_TYPE_Q4_0_4_4: ftype = LLAMA_FTYPE_MOSTLY_Q4_0_4_4; break;
                 case GGML_TYPE_Q4_0_4_8: ftype = LLAMA_FTYPE_MOSTLY_Q4_0_4_8; break;
                 case GGML_TYPE_Q4_0_8_8: ftype = LLAMA_FTYPE_MOSTLY_Q4_0_8_8; break;
+                case GGML_TYPE_I2      : ftype = LLAMA_FTYPE_MOSTLY_I2      ; break;
                 default:
                     {
                         LLAMA_LOG_WARN("%s: unknown type %s\n", __func__, ggml_type_name(type_max));
@@ -5154,6 +5155,7 @@ static std::string llama_model_ftype_name(llama_ftype ftype) {
         case LLAMA_FTYPE_MOSTLY_Q4_0_4_4: return "Q4_0_4_4";
         case LLAMA_FTYPE_MOSTLY_Q4_0_4_8: return "Q4_0_4_8";
         case LLAMA_FTYPE_MOSTLY_Q4_0_8_8: return "Q4_0_8_8";
+        case LLAMA_FTYPE_MOSTLY_I2:       return "I2";
 
         default: return "unknown, may not work";
     }
@@ -17233,6 +17235,7 @@ static void llama_model_quantize_internal(const std::string & fname_inp, const s
         case LLAMA_FTYPE_MOSTLY_F16:  default_type = GGML_TYPE_F16;  break;
         case LLAMA_FTYPE_MOSTLY_BF16: default_type = GGML_TYPE_BF16; break;
         case LLAMA_FTYPE_ALL_F32:     default_type = GGML_TYPE_F32;  break;
+        case LLAMA_FTYPE_MOSTLY_I2:   default_type = GGML_TYPE_I2;   break;
 
         // K-quants
         case LLAMA_FTYPE_MOSTLY_Q2_K_S:
