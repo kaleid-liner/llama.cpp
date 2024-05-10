@@ -45,7 +45,7 @@ NDArray: TypeAlias = 'np.ndarray[Any, Any]'
 
 ARCH = gguf.MODEL_ARCH.BITNET
 
-DEFAULT_CONCURRENCY = 8
+DEFAULT_CONCURRENCY = 16
 
 ADDED_TOKENS_FILE = 'added_tokens.json'
 FAST_TOKENIZER_FILE = 'tokenizer.json'
@@ -135,26 +135,17 @@ class I2TransformedDataType(TransformedDataType):
                 if x[i] != 0:
                     d = x[i]
             x = np.divide(x, d)
-            group_num = x_num // 4
-            vec = []
-            for group in range(group_num):
-                temp = np.array(0).astype(np.uint8)
-                for num in range(4):
-                    if (x[group * 4 + num] == 1):
-                        temp = np.left_shift(temp, 1)
-                        temp = np.bitwise_or(temp, 0)
-                        temp = np.left_shift(temp, 1)
-                        temp = np.bitwise_or(temp, 1)
-                    elif (x[group * 4 + num] == -1):
-                        temp = np.left_shift(temp, 1)
-                        temp = np.bitwise_or(temp, 1)
-                        temp = np.left_shift(temp, 1)
-                        temp = np.bitwise_or(temp, 1)
-                    else :
-                        temp = np.left_shift(temp, 2)
-                vec.append(temp)
-            ans = np.array(vec).astype(np.uint8)
-            # print(ans)
+            
+            x = x.astype(np.uint8)
+            x = np.reshape(x, [x.shape[0] // 4, 4])
+            keep_bit = {0:192, 1:48, 2:12, 3:3}
+            ans = np.zeros([x_num // 4], dtype=np.uint8)
+            for i in range(4):
+                x_bit_col = x[:, i]
+                x_bit_shift = np.left_shift(x_bit_col, 6 - i * 2)
+                x_bit_shift = np.bitwise_and(x_bit_shift, keep_bit[i])
+                ans = np.bitwise_or(ans, x_bit_shift)
+            
             return ans
         return transform_to_i2(arr)
 
