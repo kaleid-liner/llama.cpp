@@ -1663,19 +1663,21 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
             }
         }
 
-        // if (!sched->callback_eval) {
-        //     enum ggml_status ec = ggml_backend_graph_compute_async(split_backend, &split->graph);
-        //     if (ec != GGML_STATUS_SUCCESS) {
-        //         return ec;
-        //     }
-        // } else {
+
+        if (!sched->callback_eval) {
+            enum ggml_status ec = ggml_backend_graph_compute_async(split_backend, &split->graph);
+            if (ec != GGML_STATUS_SUCCESS) {
+                return ec;
+            }
+        } else {
             // similar to ggml_backend_compare_graph_backend
             for (int j0 = 0; j0 < split->graph.n_nodes; j0++) {
                 struct ggml_tensor * t = split->graph.nodes[j0];
                 printf("%s\n", t->name);
+
                 // check if the user needs data from this node
                 bool need = sched->callback_eval(t, true, sched->callback_eval_user_data);
-
+                printf("end callback\n");
                 int j1 = j0;
 
                 // determine the range [j0, j1] of nodes that can be computed together
@@ -1683,24 +1685,26 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                     t = split->graph.nodes[++j1];
                     need = sched->callback_eval(t, true, sched->callback_eval_user_data);
                 }
+                printf("end sec callback\n");
 
                 struct ggml_cgraph gv = ggml_graph_view(&split->graph, j0, j1 + 1);
-
+                printf("end view\n");
                 enum ggml_status ec = ggml_backend_graph_compute_async(split_backend, &gv);
                 if (ec != GGML_STATUS_SUCCESS) {
                     return ec;
                 }
-
+                printf("end compute\n");
                 // TODO: pass backend to the callback, then the user can decide if they want to synchronize
                 ggml_backend_synchronize(split_backend);
                 printf("check\n");
+
                 if (need && !sched->callback_eval(t, false, sched->callback_eval_user_data)) {
                     break;
                 }
 
                 j0 = j1;
             }
-        // }
+        }
 
         // record the event of this copy
         if (split->n_inputs > 0) {

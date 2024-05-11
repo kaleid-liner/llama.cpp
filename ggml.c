@@ -4186,6 +4186,21 @@ struct ggml_tensor * ggml_mean(
     return result;
 }
 
+struct ggml_tensor * ggml_bitnet_mul_mat(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * a,
+        struct ggml_tensor  * b) {
+    const int64_t ne[4] = { a->ne[1], b->ne[1], b->ne[2], b->ne[3] };
+    struct ggml_tensor * result = ggml_new_tensor(ctx, GGML_TYPE_F32, 4, ne);
+
+    result->op   = GGML_OP_BITNET_MUL_MAT;
+    result->grad = NULL;
+    result->src[0] = a;
+    result->src[1] = b;
+
+    return result;
+    }
+
 // ggml_bitlinear_quant for bitnet
 
 struct ggml_tensor * ggml_bitlinear_quant(
@@ -10921,6 +10936,79 @@ static bool ggml_compute_forward_mul_mat_use_blas(struct ggml_tensor * dst) {
 }
 #endif
 
+static void ggml_compute_forward_bitnet_mul_mat(
+        const struct ggml_compute_params * params,
+              struct ggml_tensor * dst) {
+
+    const struct ggml_tensor * src0 = dst->src[0];
+    const struct ggml_tensor * src1 = dst->src[1];
+
+    printf("begin mul mat\n");
+    printf("%s\n", src0->name);
+    printf("%s\n", src1->name);
+
+    uint8_t *i_weight = (uint8_t*) ((char *) src0->data);
+    printf("%d\n", i_weight[0]);
+    printf("%d\n", i_weight[1]);
+    printf("%d\n", i_weight[2]);
+    printf("%d\n", i_weight[3]);
+    printf("%d\n", i_weight[4]);
+    printf("%d\n", i_weight[5]);
+    float *f_inp = (float*) ((char *) src1->data);
+    printf("%f\n", f_inp[0]);
+    printf("%f\n", f_inp[1]);
+
+    int64_t t0 = ggml_perf_time_us();
+    UNUSED(t0);
+
+    GGML_TENSOR_BINARY_OP_LOCALS
+
+    const int ith = params->ith;
+    const int nth = params->nth;
+
+    const enum ggml_type type = src0->type;
+    printf("%d\n", src0->type);
+    printf("%d\n", src1->type);
+
+    const bool src1_cont = ggml_is_contiguous(src1);
+
+    printf("%d\n", ggml_is_contiguous(src0));
+    printf("%d\n", ggml_is_contiguous(src1));
+    float* f_dst = (float*) ((char *) dst->data);
+    f_dst[0] = 1000.f;
+    f_dst[1] = 100.f;
+    printf("dst[0]:%f\n",((float*) ((char *) dst->data))[0]);
+    printf("dst[1]:%f\n",((float*) ((char *) dst->data))[1]);
+
+    GGML_ASSERT(ne0 == ne01);
+    GGML_ASSERT(ne1 == ne11);
+    GGML_ASSERT(ne2 == ne12);
+    GGML_ASSERT(ne3 == ne13);
+
+    // we don't support permuted src0 or src1
+    GGML_ASSERT(nb00 == ggml_type_size(type));
+    GGML_ASSERT(nb10 == ggml_type_size(src1->type));
+
+    // dst cannot be transposed or permuted
+    GGML_ASSERT(nb0 == sizeof(float));
+    GGML_ASSERT(nb0 <= nb1);
+    GGML_ASSERT(nb1 <= nb2);
+    GGML_ASSERT(nb2 <= nb3);
+
+    // broadcast factors
+    const int64_t r2 = ne12/ne02;
+    const int64_t r3 = ne13/ne03;
+
+    // nb01 >= nb00 - src0 is not transposed
+    //   compute by src0 rows
+
+    if (params->type == GGML_TASK_TYPE_INIT || params->type == GGML_TASK_TYPE_FINALIZE) {
+        return;
+    }
+
+}
+
+
 static void ggml_compute_forward_mul_mat(
         const struct ggml_compute_params * params,
               struct ggml_tensor * dst) {
@@ -16588,6 +16676,7 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
     if (tensor->op == GGML_OP_NONE || ggml_is_empty(tensor)) {
         return;
     }
+    printf("kernel:%d\n", tensor->op);
 
     switch (tensor->op) {
         case GGML_OP_DUP:
@@ -16645,6 +16734,10 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
         case GGML_OP_BITLINEAR_QUANT:
             {
                 ggml_compute_forward_bitlinear_quant(params, tensor->src[0], tensor);
+            } break;
+        case GGML_OP_BITNET_MUL_MAT:
+            {
+                ggml_compute_forward_bitnet_mul_mat(params, tensor);
             } break;
         case GGML_OP_ARGMAX:
             {
@@ -17362,6 +17455,7 @@ static void ggml_compute_backward(struct ggml_context * ctx, struct ggml_tensor 
             } break;
         case GGML_OP_MEAN:
         case GGML_OP_BITLINEAR_QUANT:
+        case GGML_OP_BITNET_MUL_MAT:
         case GGML_OP_ARGMAX:
             {
                 GGML_ASSERT(false); // TODO: implement
@@ -18473,6 +18567,7 @@ static int ggml_get_n_tasks(struct ggml_tensor * node, int n_threads, int n_cur_
         case GGML_OP_SUM_ROWS:
         case GGML_OP_MEAN:
         case GGML_OP_BITLINEAR_QUANT:
+        case GGML_OP_BITNET_MUL_MAT:
         case GGML_OP_ARGMAX:
         case GGML_OP_REPEAT:
         case GGML_OP_REPEAT_BACK:
@@ -18785,21 +18880,25 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
 
                 if (n_tasks == 1) {
                     /* INIT */
+                    printf("before compute forward\n");
                     if (GGML_OP_HAS_INIT[node->op]) {
                         params.type = GGML_TASK_TYPE_INIT;
                         ggml_compute_forward(&params, node);
                     }
+                    printf("after compute forward\n");
 
                     // TODO: maybe push node_n to the atomic but if other threads see n_tasks is 1,
                     // they do something more efficient than spinning (?)
+                    printf("%s\n", node->name);
                     params.type = GGML_TASK_TYPE_COMPUTE;
+                    printf("before vital compute forward2\n");
                     ggml_compute_forward(&params, node);
-
+                    printf("after compute forward2\n");
                     if (GGML_OP_HAS_FINALIZE[node->op]) {
                         params.type = GGML_TASK_TYPE_FINALIZE;
                         ggml_compute_forward(&params, node);
                     }
-
+                    printf("after compute forward3\n");
                     ggml_graph_compute_perf_stats_node(node, state->shared);
                 } else {
                     break;
@@ -19120,11 +19219,11 @@ enum ggml_status ggml_graph_compute(struct ggml_cgraph * cgraph, struct ggml_cpl
 
     const int64_t perf_start_cycles  = ggml_perf_cycles();
     const int64_t perf_start_time_us = ggml_perf_time_us();
-
+    printf("this thread\n");
     // this is a work thread too
     ggml_graph_compute_thread(&workers[0]);
     enum ggml_status compute_status = workers[0].ec;
-
+    printf("end thread\n");
     // don't leave affinity set on the main thread
     clear_numa_thread_affinity();
 

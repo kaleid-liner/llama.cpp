@@ -504,6 +504,7 @@ extern "C" {
 
         GGML_OP_COUNT,
         GGML_OP_BITLINEAR_QUANT,
+        GGML_OP_BITNET_MUL_MAT,
     };
 
     enum ggml_unary_op {
@@ -987,6 +988,12 @@ extern "C" {
     GGML_API struct ggml_tensor * ggml_bitlinear_quant(
             struct ggml_context * ctx,
             struct ggml_tensor  * a);
+
+    // for bitnet
+    GGML_API struct ggml_tensor * ggml_bitnet_mul_mat(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * a,
+            struct ggml_tensor  * b);
 
     // argmax along rows
     GGML_API struct ggml_tensor * ggml_argmax(
