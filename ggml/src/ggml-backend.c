@@ -1802,12 +1802,12 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
             }
         }
 
-        // if (!sched->callback_eval) {
-        //     enum ggml_status ec = ggml_backend_graph_compute_async(split_backend, &split->graph);
-        //     if (ec != GGML_STATUS_SUCCESS) {
-        //         return ec;
-        //     }
-        // } else {
+        if (!sched->callback_eval) {
+            enum ggml_status ec = ggml_backend_graph_compute_async(split_backend, &split->graph);
+            if (ec != GGML_STATUS_SUCCESS) {
+                return ec;
+            }
+        } else {
             // similar to ggml_backend_compare_graph_backend
             for (int j0 = 0; j0 < split->graph.n_nodes; j0++) {
                 struct ggml_tensor * t = split->graph.nodes[j0];
@@ -1839,7 +1839,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
 
                 j0 = j1;
             }
-        // }
+        }
 
         // record the event of this copy
         if (split->n_inputs > 0) {
