@@ -2000,6 +2000,33 @@ inline static void ggml_vec_argmax_f32(const int n, int * s, const float * x) {
     *s = idx;
 }
 
+inline static void ggml_vec_dot_i2_f32(int n, float * s, const float * x, uint8_t* w) {
+    ggml_float sumf = 0.0f;
+    for (int i = 0; i < n / 4; ++i) {
+        int wi = i;
+        uint8_t weight = w[wi];
+        for (int shift = 0; shift < 4; ++shift){
+            uint8_t pos = (weight >> (6 - 2 * shift)) & (uint8_t)(3);
+            ggml_float v = 0;
+            switch (pos)
+            {
+            case 0:
+                break;
+            case 1:
+                v = x[i * 4 + shift];
+                break;
+            case 2:
+                break;
+            case 3:
+                v = -x[i * 4 + shift];
+                break;
+            }
+            sumf += v;
+        }
+    }
+    *s = sumf;
+}
+
 inline static void ggml_vec_absmaxclamp_f32(const int n, float * s, const float * x, float min) {
     float max = min;
     for (int i = 0; i < n; ++i) {
@@ -9400,6 +9427,13 @@ static void ggml_compute_forward_bitlinear_quant_f32(
         return;
     }
 
+    printf("begin quant\n");
+    printf("%s\n", src0->name);
+    printf("%.4f\n", *(float*) ((uint8_t *)(src0->data)) + 0);
+    printf("%.4f\n", *(float*) ((uint8_t *)(src0->data)) + 1);
+    printf("%.4f\n", *(float*) ((uint8_t *)(src0->data)) + 2);
+    printf("%.4f\n", *(float*) ((uint8_t *)(src0->data)) + 3);
+
     assert(src0->nb[0] == sizeof(float));
 
     GGML_TENSOR_UNARY_OP_LOCALS
@@ -9428,6 +9462,12 @@ static void ggml_compute_forward_bitlinear_quant_f32(
             }
         }
     }
+    printf("after quant\n");
+    printf("%s\n", dst->name);
+    printf("%.4f\n", *(float*) ((uint8_t *)(dst->data)) + 0);
+    printf("%.4f\n", *(float*) ((uint8_t *)(dst->data)) + 1);
+    printf("%.4f\n", *(float*) ((uint8_t *)(dst->data)) + 2);
+    printf("%.4f\n", *(float*) ((uint8_t *)(dst->data)) + 3);
 }
 
 static void ggml_compute_forward_bitlinear_quant(
@@ -10947,16 +10987,23 @@ static void ggml_compute_forward_bitnet_mul_mat(
     printf("%s\n", src0->name);
     printf("%s\n", src1->name);
 
-    uint8_t *i_weight = (uint8_t*) ((char *) src0->data);
-    printf("%d\n", i_weight[0]);
-    printf("%d\n", i_weight[1]);
-    printf("%d\n", i_weight[2]);
-    printf("%d\n", i_weight[3]);
-    printf("%d\n", i_weight[4]);
-    printf("%d\n", i_weight[5]);
-    float *f_inp = (float*) ((char *) src1->data);
-    printf("%f\n", f_inp[0]);
-    printf("%f\n", f_inp[1]);
+    // uint8_t *i_weight = (uint8_t*) (src0->data);
+    // q_weight 3200 * 800 (uint8) -> 3200 * 3200 (uint2) 
+    // printf("%d\n", i_weight[0]);
+    // printf("%d\n", i_weight[1]);
+    // printf("%d\n", i_weight[2]);
+    // printf("%d\n", i_weight[3]);
+    // printf("%d\n", i_weight[4]);
+    // printf("%d\n", i_weight[5]);
+    // printf("%d\n", i_weight[3200*800-1]);
+    // printf("%d\n", i_weight[3200*800-2]);
+    // printf("%d\n", i_weight[3200*800-3]);
+    // printf("%d\n", i_weight[3200*800-4]);
+    // float f_inp = (float) *(uint8_t *)(src1->data) + 0;
+    // printf("%.4f\n", *(float*) ((uint8_t *)(src1->data)) + 0);
+    // printf("%.4f\n", *(float*) ((uint8_t *)(src1->data)) + 1);
+    // printf("%.4f\n", *(float*) ((uint8_t *)(src1->data)) + 2);
+    // printf("%.4f\n", *(float*) ((uint8_t *)(src1->data)) + 3);
 
     int64_t t0 = ggml_perf_time_us();
     UNUSED(t0);
@@ -10967,19 +11014,20 @@ static void ggml_compute_forward_bitnet_mul_mat(
     const int nth = params->nth;
 
     const enum ggml_type type = src0->type;
-    printf("%d\n", src0->type);
-    printf("%d\n", src1->type);
+    // printf("%d\n", src0->type);
+    // printf("%d\n", src1->type);
 
     const bool src1_cont = ggml_is_contiguous(src1);
 
-    printf("%d\n", ggml_is_contiguous(src0));
-    printf("%d\n", ggml_is_contiguous(src1));
-    float* f_dst = (float*) ((char *) dst->data);
-    f_dst[0] = 1000.f;
-    f_dst[1] = 100.f;
-    printf("dst[0]:%f\n",((float*) ((char *) dst->data))[0]);
-    printf("dst[1]:%f\n",((float*) ((char *) dst->data))[1]);
-
+    // printf("%d\n", ggml_is_contiguous(src0));
+    // printf("%d\n", ggml_is_contiguous(src1));
+    // float* f_dst = (float*) ((char *) dst->data);
+    // f_dst[1] = 1.1f;
+    // f_dst[2] = 2.2f;
+    // printf("dst[0]:%f\n",(float*)((uint8_t *) dst->data))[0]);
+    // printf("dst[1]:%f\n",((float*) ((char *) dst->data))[1]);
+    // printf("%s\n", dst->name);
+    // printf("%d\n", dst->type);
     GGML_ASSERT(ne0 == ne01);
     GGML_ASSERT(ne1 == ne11);
     GGML_ASSERT(ne2 == ne12);
@@ -11006,6 +11054,24 @@ static void ggml_compute_forward_bitnet_mul_mat(
         return;
     }
 
+    printf("ne03:%ld\n", ne03);
+    printf("ne02:%ld\n", ne02);
+    printf("ne01:%ld\n", ne01);
+    printf("ne00:%ld\n", ne00);
+
+    printf("nb0:%ld\n", nb0);
+    printf("nb1:%ld\n", nb1);
+
+    for (int64_t i03 = 0; i03 < ne03; i03++) {
+        for (int64_t i02 = 0; i02 < ne02; i02++) {
+            for (int64_t i01 = 0; i01 < ne01; i01++) {
+                float * dst_col = (float *) ((char *) dst->data + (i01 + i02*ne02 + i03*ne03) * nb0);
+                float * inp_row = (float *) ((char *) src1->data);
+                uint8_t * weight_col = (uint8_t *) ((char *) src0->data + (i01*ne01 + i02*ne02 + i03*ne03) / 4);
+                ggml_vec_dot_i2_f32(ne00, dst_col, inp_row, weight_col);
+            }
+        }
+    }
 }
 
 
@@ -18895,6 +18961,7 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
                     ggml_compute_forward(&params, node);
                     printf("after compute forward2\n");
                     if (GGML_OP_HAS_FINALIZE[node->op]) {
+                        printf("begin finalize\n");
                         params.type = GGML_TASK_TYPE_FINALIZE;
                         ggml_compute_forward(&params, node);
                     }

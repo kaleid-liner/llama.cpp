@@ -1253,8 +1253,15 @@ class OutputFile:
             logger.info(
                 f"[{i + 1:{padi}d}/{len(model)}] Writing tensor {name:38s} | size {size:16} | type {lazy_tensor.data_type.name:4} | T+{int(elapsed):4}"
             )
-            # print(name)
-            # print(ndarray)
+            if "attn_q" in name:
+                print(name)
+                print(ndarray[0])
+                print(ndarray[1])
+                print(ndarray[2])
+                print(ndarray[3])
+                print(ndarray[4])
+                print(ndarray[5])
+                print(ndarray)
             self.gguf.write_tensor_data(ndarray)
 
     def close(self) -> None:
@@ -1296,13 +1303,6 @@ class OutputFile:
         if not isinstance(dt, QuantizedDataType):
             return arr
         return dt.quantize(arr)
-
-    @staticmethod
-    def maybe_do_transform(item: tuple[DataType, NDArray]) -> NDArray:
-        dt, arr = item
-        if not isinstance(dt, TransformedDataType):
-            return arr
-        return dt.transform(arr)
 
     @staticmethod
     def write_all(
