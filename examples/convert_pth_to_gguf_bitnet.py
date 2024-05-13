@@ -1068,13 +1068,6 @@ class OutputFile:
         return dt.quantize(arr)
 
     @staticmethod
-    def maybe_do_transform(item: tuple[DataType, NDArray]) -> NDArray:
-        dt, arr = item
-        if not isinstance(dt, TransformedDataType):
-            return arr
-        return dt.transform(arr)
-
-    @staticmethod
     def write_all(
         fname_out: Path, ftype: GGMLFileType, params: Params, model: LazyModel, vocab: BaseVocab, svocab: gguf.SpecialVocab,
         concurrency: int = DEFAULT_CONCURRENCY, endianess: gguf.GGUFEndian = gguf.GGUFEndian.LITTLE,
