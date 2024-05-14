@@ -724,11 +724,12 @@ def bf16_to_fp32(bf16_arr: np.ndarray[Any, np.dtype[np.uint16]]) -> NDArray:
 def transform_to_i2(x : NDArray):
     x_num = np.prod(x.shape)
     x = np.reshape(x, x_num)
+    scale = 1
     for i in range(x_num):
         if x[i] != 0:
-            d = x[i]
+            scale = x[i]
             break
-    x = np.divide(x, d)
+    x = np.divide(x, scale)
     x = x.astype(np.uint8)
     x = np.reshape(x, [x.shape[0] // 4, 4])
     keep_bit = {0:192, 1:48, 2:12, 3:3}
@@ -738,21 +739,22 @@ def transform_to_i2(x : NDArray):
         x_bit_shift = np.left_shift(x_bit_col, 6 - i * 2)
         x_bit_shift = np.bitwise_and(x_bit_shift, keep_bit[i])
         ans = np.bitwise_or(ans, x_bit_shift)
-    return ans
+    return ans, scale
 
 class UnquantizedTensor(Tensor):
-    def __init__(self, ndarray: NDArray):
+    def __init__(self, ndarray: NDArray, i2_scale: NDArray = None):
         assert isinstance(ndarray, np.ndarray)
         self.ndarray = ndarray
         self.data_type = NUMPY_TYPE_TO_DATA_TYPE[ndarray.dtype]
+        self.i2_scale = i2_scale
 
     def astype(self, data_type: DataType) -> UnquantizedTensor:
         dtype = data_type.dtype
         if self.data_type == DT_BF16:
             self.ndarray = bf16_to_fp32(self.ndarray)
         if dtype == np.uint8:
-            self.ndarray = transform_to_i2(self.ndarray)
-        return UnquantizedTensor(self.ndarray.astype(dtype))
+            self.ndarray, self.i2_scale = transform_to_i2(self.ndarray)
+        return UnquantizedTensor(self.ndarray.astype(dtype), self.i2_scale)
 
     def to_ggml(self) -> Self:
         return self
@@ -1213,6 +1215,11 @@ class OutputFile:
         data_nbytes = tensor.data_type.elements_to_bytes(n_elements)
         if tensor.data_type.name == "I2":
             data_nbytes = data_nbytes // 4
+            scale_name = name.replace('.weight', '_scale.weight')
+            scale_shape = [1]
+            scale_data_type = np.float32
+            scale_nbytes = 4
+            self.gguf.add_tensor_info(scale_name, scale_shape, scale_data_type, scale_nbytes, raw_dtype=None)
         # print(tensor.data_type.name)
         # print(name)
         # print(tensor.shape)
@@ -1244,6 +1251,19 @@ class OutputFile:
 
         start = time.time()
         for i, ((name, lazy_tensor), ndarray) in enumerate(zip(model.items(), ndarrays)):
+            ndarray, i2_scale = ndarray
+            if i2_scale is not None:
+                elapsed = time.time() - start
+                size = ' x '.join(f"{dim:6d}" for dim in [1])
+                padi = len(str(len(model)))
+                i2_name = name.replace('.weight', '_scale.weight')
+                type_name = 'F32'
+                logger.info(
+                    f"[{i + 1:{padi}d}/{len(model)}] Writing tensor {i2_name:38s} | size {size:16} | type {type_name:4} | T+{int(elapsed):4}"
+                )
+                print(i2_name)
+                print(i2_scale)
+                self.gguf.write_tensor_data(i2_scale)
             elapsed = time.time() - start
             size = ' x '.join(f"{dim:6d}" for dim in lazy_tensor.shape)
             padi = len(str(len(model)))
@@ -1253,15 +1273,6 @@ class OutputFile:
             logger.info(
                 f"[{i + 1:{padi}d}/{len(model)}] Writing tensor {name:38s} | size {size:16} | type {lazy_tensor.data_type.name:4} | T+{int(elapsed):4}"
             )
-            if "attn_q" in name:
-                print(name)
-                print(ndarray[0])
-                print(ndarray[1])
-                print(ndarray[2])
-                print(ndarray[3])
-                print(ndarray[4])
-                print(ndarray[5])
-                print(ndarray)
             self.gguf.write_tensor_data(ndarray)
 
     def close(self) -> None:
@@ -1295,13 +1306,13 @@ class OutputFile:
         tensor = lazy_tensor.load().to_ggml()
         # print(lazy_tensor.data_type)
         # print(tensor.ndarray)
-        return (lazy_tensor.data_type, tensor.ndarray)
+        return (lazy_tensor.data_type, tensor.ndarray, tensor.i2_scale)
 
     @staticmethod
     def maybe_do_quantize(item: tuple[DataType, NDArray]) -> NDArray:
-        dt, arr = item
+        dt, arr, i2_scale = item
         if not isinstance(dt, QuantizedDataType):
-            return arr
+            return arr, i2_scale
         return dt.quantize(arr)
 
     @staticmethod

@@ -3,11 +3,12 @@ import numpy as np
 def transform_to_i2(x):
     x_num = np.prod(x.shape)
     x = np.reshape(x, x_num)
+    scale = 1
     for i in range(x_num):
         if x[i] != 0:
-            d = x[i]
+            scale = x[i]
             break
-    x = np.divide(x, d)
+    x = np.divide(x, scale)
     x = x.astype(np.uint8)
     x = np.reshape(x, [x.shape[0] // 4, 4])
     keep_bit = {0:192, 1:48, 2:12, 3:3}
@@ -17,31 +18,52 @@ def transform_to_i2(x):
         x_bit_shift = np.left_shift(x_bit_col, 6 - i * 2)
         x_bit_shift = np.bitwise_and(x_bit_shift, keep_bit[i])
         ans = np.bitwise_or(ans, x_bit_shift)
-    return ans
+    return ans, scale
 
-x = np.random.randn(8, 1)
+src0_row_num = 16
+src1_col_num = 1
+k_num = 16
+
+x = np.random.randn(k_num, src1_col_num)
 w = []
-for i in range(64):
+for i in range(16 * 16):
      w.append(np.random.randint(-1, 2))
-w = np.array(w).reshape(8, 8)*2.26
+w = np.array(w).reshape(src0_row_num, k_num)*2.26
 
-
-# print(x)
+print(x)
 print(w)
 
 out = np.matmul(w, x)
-# print(out)
+print(out)
 
-w_trans = transform_to_i2(w)
-print(w_trans)
+w_trans, scale = transform_to_i2(w)
+# print(w_trans)
 
-col_num = 8
+out_ref = []
+for src0_row in range(src0_row_num):
+    for src1_col in range(src1_col_num):
+        v = 0
+        for k in range(k_num):
+            wi = k // 4
+            shift = k % 4
+            weight = w_trans[src0_row * (k_num // 4) + wi]
+            # print(weight)
+            pos = (weight >> (6 - 2 * shift)) & (3)
+            # print(pos)
+            if pos == 1:
+                v = v + x[src1_col + k]
+            elif pos == 3:
+                v = v - x[src1_col + k]
+        out_ref.append(v)
 
-for i in range(2):
-    weight = w_trans[i]
-    for j in range(4):
-        pos = (weight >> (6 - 2 * j)) & (3)
-        print(pos)
+print(np.array(out_ref)*scale)
+            
+
+# for i in range(2):
+#     weight = w_trans[i]
+#     for j in range(4):
+#         pos = (weight >> (6 - 2 * j)) & (3)
+        
         
 
 # print(x)

@@ -993,7 +993,8 @@ extern "C" {
     GGML_API struct ggml_tensor * ggml_bitnet_mul_mat(
             struct ggml_context * ctx,
             struct ggml_tensor  * a,
-            struct ggml_tensor  * b);
+            struct ggml_tensor  * b,
+            struct ggml_tensor  * scale);
 
     // argmax along rows
     GGML_API struct ggml_tensor * ggml_argmax(

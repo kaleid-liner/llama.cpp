@@ -233,8 +233,10 @@ class GGUFWriter:
                 raise ValueError("Only F16, F32, F64, I8, I16, I32, I64 tensors are supported for now")
         else:
             dtype = raw_dtype
-        print(dtype)
-        print(self.offset_tensor)
+        # print("write_tensor_info")
+        # print(name)
+        # print(dtype)
+        # print(self.offset_tensor)
         self.ti_data += self._pack("I", dtype)
         self.ti_data += self._pack("Q", self.offset_tensor)
         self.offset_tensor += GGUFWriter.ggml_pad(tensor_nbytes, self.data_alignment)

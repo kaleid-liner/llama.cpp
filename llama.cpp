@@ -474,6 +474,13 @@ enum llm_tensor {
     LLM_TENSOR_SSM_OUT,
     LLM_TENSOR_ATTN_SUB_NORM,
     LLM_TENSOR_FFN_SUB_NORM,
+    LLM_TENSOR_ATTN_Q_SCALE,
+    LLM_TENSOR_ATTN_K_SCALE,
+    LLM_TENSOR_ATTN_V_SCALE,
+    LLM_TENSOR_ATTN_O_SCALE,
+    LLM_TENSOR_FFN_UP_SCALE,
+    LLM_TENSOR_FFN_DOWN_SCALE,
+    LLM_TENSOR_FFN_GATE_SCALE,
 };
 
 static const std::map<llm_arch, std::map<llm_tensor, std::string>> LLM_TENSOR_NAMES = {
@@ -747,6 +754,13 @@ static const std::map<llm_arch, std::map<llm_tensor, std::string>> LLM_TENSOR_NA
             { LLM_TENSOR_FFN_UP,          "blk.%d.ffn_up" },
             { LLM_TENSOR_FFN_NORM,        "blk.%d.ffn_norm" },
             { LLM_TENSOR_FFN_SUB_NORM,    "blk.%d.ffn_sub_norm" },
+            { LLM_TENSOR_ATTN_Q_SCALE,    "blk.%d.attn_q_scale" },
+            { LLM_TENSOR_ATTN_K_SCALE,    "blk.%d.attn_k_scale" },
+            { LLM_TENSOR_ATTN_V_SCALE,    "blk.%d.attn_v_scale" },
+            { LLM_TENSOR_ATTN_O_SCALE,    "blk.%d.attn_output_scale" },
+            { LLM_TENSOR_FFN_UP_SCALE,    "blk.%d.ffn_up_scale" },
+            { LLM_TENSOR_FFN_DOWN_SCALE,  "blk.%d.ffn_down_scale" },
+            { LLM_TENSOR_FFN_GATE_SCALE,  "blk.%d.ffn_gate_scale" },
         },
     },
     {
@@ -1993,6 +2007,15 @@ struct llama_layer {
     struct ggml_tensor * bv;
     struct ggml_tensor * bo;
     struct ggml_tensor * bqkv;
+
+    // attention scale
+    struct ggml_tensor * wq_scale;
+    struct ggml_tensor * wk_scale;
+    struct ggml_tensor * wv_scale;
+    struct ggml_tensor * wo_scale;
+    struct ggml_tensor * ffn_up_scale;
+    struct ggml_tensor * ffn_down_scale;
+    struct ggml_tensor * ffn_gate_scale;
 
     // normalization
     struct ggml_tensor * ffn_norm;
@@ -5431,16 +5454,23 @@ static bool llm_load_tensors(
                         layer.attn_sub_norm = ml.create_tensor(ctx_layer, tn(LLM_TENSOR_ATTN_SUB_NORM, "weight", i), {n_embd});
 
                         layer.wq = ml.create_tensor(ctx_split, tn(LLM_TENSOR_ATTN_Q, "weight", i), {n_embd, n_embd});
+                        layer.wq_scale = ml.create_tensor(ctx_split, tn(LLM_TENSOR_ATTN_Q_SCALE, "weight", i), {1});
                         layer.wk = ml.create_tensor(ctx_split, tn(LLM_TENSOR_ATTN_K, "weight", i), {n_embd, n_embd_gqa});
+                        layer.wk_scale = ml.create_tensor(ctx_split, tn(LLM_TENSOR_ATTN_K_SCALE, "weight", i), {1});
                         layer.wv = ml.create_tensor(ctx_split, tn(LLM_TENSOR_ATTN_V, "weight", i), {n_embd, n_embd_gqa});
+                        layer.wv_scale = ml.create_tensor(ctx_split, tn(LLM_TENSOR_ATTN_V_SCALE, "weight", i), {1});
                         layer.wo = ml.create_tensor(ctx_split, tn(LLM_TENSOR_ATTN_OUT, "weight", i), {n_embd, n_embd});
+                        layer.wo_scale = ml.create_tensor(ctx_split, tn(LLM_TENSOR_ATTN_O_SCALE, "weight", i), {1});
 
                         layer.ffn_norm = ml.create_tensor(ctx_layer, tn(LLM_TENSOR_FFN_NORM, "weight", i), {n_embd});
                         layer.ffn_sub_norm = ml.create_tensor(ctx_layer, tn(LLM_TENSOR_FFN_SUB_NORM, "weight", i), {n_ff});
 
                         layer.ffn_gate = ml.create_tensor(ctx_split, tn(LLM_TENSOR_FFN_GATE, "weight", i), {n_embd, n_ff});
+                        layer.ffn_gate_scale = ml.create_tensor(ctx_split, tn(LLM_TENSOR_FFN_GATE_SCALE, "weight", i), {1});
                         layer.ffn_down = ml.create_tensor(ctx_split, tn(LLM_TENSOR_FFN_DOWN, "weight", i), {n_ff, n_embd});
+                        layer.ffn_down_scale = ml.create_tensor(ctx_split, tn(LLM_TENSOR_FFN_DOWN_SCALE, "weight", i), {1});
                         layer.ffn_up   = ml.create_tensor(ctx_split, tn(LLM_TENSOR_FFN_UP,   "weight", i), {n_embd, n_ff});
+                        layer.ffn_up_scale = ml.create_tensor(ctx_split, tn(LLM_TENSOR_FFN_UP_SCALE, "weight", i), {1});
                     }
                 } break;
             case LLM_ARCH_QWEN:
@@ -8864,31 +8894,71 @@ struct llm_build_context {
         inpL = llm_build_inp_embd(ctx0, lctx, hparams, batch, model.tok_embd, cb);
 
         // inp_pos - contains the positions
-        // struct ggml_tensor * inp_pos = build_inp_pos();
+        struct ggml_tensor * inp_pos = build_inp_pos();
 
-        // // KQ_mask (mask for 1 head, it will be broadcasted to all heads)
-        // struct ggml_tensor * KQ_mask = build_inp_KQ_mask();
+        // KQ_mask (mask for 1 head, it will be broadcasted to all heads)
+        struct ggml_tensor * KQ_mask = build_inp_KQ_mask();
 
-            // struct ggml_tensor * inpSA = inpL;
+        for (int il = 0; il < 1; ++il) {
+            struct ggml_tensor * inpSA = inpL;
 
-            // cur = llm_build_norm(ctx0, inpL, hparams,
-            //         model.layers[0].attn_norm, NULL,
-            //         LLM_NORM_RMS, cb, 0);
-            // cb(cur, "attn_norm", 0);
+            cur = llm_build_norm(ctx0, inpL, hparams,
+                    model.layers[il].attn_norm, NULL,
+                    LLM_NORM_RMS, cb, il);
+            cb(cur, "attn_norm", il);
 
             // self-attention
-            // {
+            {
                 // compute Q and K and RoPE them
                 // B1.Q
-                cur = quant_bitlinear(ctx0, inpL, isbitnet);
-                cb(cur, "after_bit", 0);
-                struct ggml_tensor * Qcur = ggml_bitnet_mul_mat(ctx0, model.layers[0].wq, cur);
-                cb(Qcur, "Qcur", 0);
-                // if (model.layers[0].bq) {
-                //     Qcur = ggml_add(ctx0, Qcur, model.layers[0].bq);
-                //     cb(Qcur, "Qcur", 0);
-                // }
-        cur = ggml_mul_mat(ctx0, model.output, Qcur);
+                cur = quant_bitlinear(ctx0, cur, isbitnet);
+                struct ggml_tensor * Qcur = ggml_bitnet_mul_mat(ctx0, model.layers[0].wq, cur, model.layers[0].wq_scale);
+                cb(Qcur, "Qcur", il);
+                if (model.layers[il].bq) {
+                    Qcur = ggml_add(ctx0, Qcur, model.layers[il].bq);
+                    cb(Qcur, "Qcur", il);
+                }
+
+                // B1.K
+                struct ggml_tensor * Kcur = ggml_bitnet_mul_mat(ctx0, model.layers[0].wk, cur, model.layers[0].wk_scale);
+                cb(Kcur, "Kcur", il);
+                if (model.layers[il].bk) {
+                    Kcur = ggml_add(ctx0, Kcur, model.layers[il].bk);
+                    cb(Kcur, "Kcur", il);
+                }
+
+                // B1.V
+                struct ggml_tensor * Vcur = ggml_bitnet_mul_mat(ctx0, model.layers[0].wv, cur, model.layers[0].wv_scale);
+                cb(Vcur, "Vcur", il);
+                if (model.layers[il].bv) {
+                    Vcur = ggml_add(ctx0, Vcur, model.layers[il].bv);
+                    cb(Vcur, "Vcur", il);
+                }
+
+                Qcur = ggml_rope_custom(
+                    ctx0, ggml_reshape_3d(ctx0, Qcur, n_embd_head, n_head,    n_tokens), inp_pos,
+                    n_embd_head, 0, 0, n_orig_ctx, freq_base, freq_scale,
+                    ext_factor, attn_factor, beta_fast, beta_slow
+                );
+                cb(Qcur, "Qcur_rope", il);
+
+                Kcur = ggml_rope_custom(
+                    ctx0, ggml_reshape_3d(ctx0, Kcur, n_embd_head, n_head_kv, n_tokens), inp_pos,
+                    n_embd_head, 0, 0, n_orig_ctx, freq_base, freq_scale,
+                    ext_factor, attn_factor, beta_fast, beta_slow
+                );
+                cb(Kcur, "Kcur_rope", il);
+
+                llm_build_kv_store(ctx0, hparams, cparams, kv_self, gf, Kcur, Vcur, n_tokens, kv_head, cb, il);
+
+                cur = llm_build_kqv(ctx0, model, hparams, cparams, kv_self, gf,
+                        model.layers[0].wo, model.layers[0].bo, 
+                        Qcur, KQ_mask, nullptr, n_tokens, n_kv, 1.0f/sqrtf(float(n_embd_head)), cb, 0,
+                        model.layers[0].attn_sub_norm, isbitnet);
+                cb(cur, "kqv_out", 0);
+            }
+        }
+        cur = ggml_mul_mat(ctx0, model.output, cur);
         cb(cur, "result_output", -1);
         // // inp_pos - contains the positions
         // struct ggml_tensor * inp_pos = build_inp_pos();

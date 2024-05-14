@@ -2000,7 +2000,7 @@ inline static void ggml_vec_argmax_f32(const int n, int * s, const float * x) {
     *s = idx;
 }
 
-inline static void ggml_vec_dot_i2_f32(int n, float * s, const float * x, uint8_t* w) {
+inline static void ggml_vec_dot_i2_f32(int n, float * s, const float * x, uint8_t* w, float scale) {
     ggml_float sumf = 0.0f;
     for (int i = 0; i < n / 4; ++i) {
         int wi = i;
@@ -2024,7 +2024,7 @@ inline static void ggml_vec_dot_i2_f32(int n, float * s, const float * x, uint8_
             sumf += v;
         }
     }
-    *s = sumf;
+    *s = sumf * scale;
 }
 
 inline static void ggml_vec_absmaxclamp_f32(const int n, float * s, const float * x, float min) {
@@ -4216,7 +4216,8 @@ struct ggml_tensor * ggml_mean(
 struct ggml_tensor * ggml_bitnet_mul_mat(
         struct ggml_context * ctx,
         struct ggml_tensor  * a,
-        struct ggml_tensor  * b) {
+        struct ggml_tensor  * b,
+        struct ggml_tensor  * scale) {
     const int64_t ne[4] = { a->ne[1], b->ne[1], b->ne[2], b->ne[3] };
     struct ggml_tensor * result = ggml_new_tensor(ctx, GGML_TYPE_F32, 4, ne);
 
@@ -4224,6 +4225,7 @@ struct ggml_tensor * ggml_bitnet_mul_mat(
     result->grad = NULL;
     result->src[0] = a;
     result->src[1] = b;
+    result->src[2] = scale;
 
     return result;
     }
@@ -10982,10 +10984,12 @@ static void ggml_compute_forward_bitnet_mul_mat(
 
     const struct ggml_tensor * src0 = dst->src[0];
     const struct ggml_tensor * src1 = dst->src[1];
+    const struct ggml_tensor * src2 = dst->src[2];
 
     printf("begin mul mat\n");
     printf("%s\n", src0->name);
     printf("%s\n", src1->name);
+    printf("%s\n", src2->name);
 
     // uint8_t *i_weight = (uint8_t*) (src0->data);
     // q_weight 3200 * 800 (uint8) -> 3200 * 3200 (uint2) 
@@ -11004,7 +11008,8 @@ static void ggml_compute_forward_bitnet_mul_mat(
     // printf("%.4f\n", *(float*) ((uint8_t *)(src1->data)) + 1);
     // printf("%.4f\n", *(float*) ((uint8_t *)(src1->data)) + 2);
     // printf("%.4f\n", *(float*) ((uint8_t *)(src1->data)) + 3);
-
+    // printf("%.4f\n", *(float*) ((uint8_t *)(src2->data)) + 0);
+    
     int64_t t0 = ggml_perf_time_us();
     UNUSED(t0);
 
@@ -11061,14 +11066,15 @@ static void ggml_compute_forward_bitnet_mul_mat(
 
     printf("nb0:%ld\n", nb0);
     printf("nb1:%ld\n", nb1);
-
+    float scale = *(float*) ((uint8_t *)(src2->data));
+    printf("scale:%f\n", scale);
     for (int64_t i03 = 0; i03 < ne03; i03++) {
         for (int64_t i02 = 0; i02 < ne02; i02++) {
             for (int64_t i01 = 0; i01 < ne01; i01++) {
                 float * dst_col = (float *) ((char *) dst->data + (i01 + i02*ne02 + i03*ne03) * nb0);
                 float * inp_row = (float *) ((char *) src1->data);
                 uint8_t * weight_col = (uint8_t *) ((char *) src0->data + (i01*ne01 + i02*ne02 + i03*ne03) / 4);
-                ggml_vec_dot_i2_f32(ne00, dst_col, inp_row, weight_col);
+                ggml_vec_dot_i2_f32(ne00, dst_col, inp_row, weight_col, scale);
             }
         }
     }
@@ -11082,10 +11088,32 @@ static void ggml_compute_forward_mul_mat(
     const struct ggml_tensor * src0 = dst->src[0];
     const struct ggml_tensor * src1 = dst->src[1];
 
+    // printf("enter normal matmul\n");
+    // printf("%s\n", src0->name);
+    // printf("%s\n", src1->name);
+
     int64_t t0 = ggml_perf_time_us();
     UNUSED(t0);
 
     GGML_TENSOR_BINARY_OP_LOCALS
+
+    // printf("dst\n");
+    // printf("ne0:%d\n", ne0);
+    // printf("ne1:%d\n", ne1);
+    // printf("ne2:%d\n", ne2);
+    // printf("ne3:%d\n", ne3);
+
+    // printf("src0\n");
+    // printf("ne00:%d\n", ne00);
+    // printf("ne01:%d\n", ne01);
+    // printf("ne02:%d\n", ne02);
+    // printf("ne03:%d\n", ne03);
+
+    // printf("src1\n");
+    // printf("ne10:%d\n", ne10);
+    // printf("ne11:%d\n", ne11);
+    // printf("ne12:%d\n", ne12);
+    // printf("ne13:%d\n", ne13);
 
     const int ith = params->ith;
     const int nth = params->nth;
@@ -11093,6 +11121,7 @@ static void ggml_compute_forward_mul_mat(
     const enum ggml_type type = src0->type;
 
     const bool src1_cont = ggml_is_contiguous(src1);
+    // printf("src1_cont:%d\n", src1_cont);
 
     ggml_vec_dot_t    const vec_dot               = type_traits[type].vec_dot;
     enum ggml_type    const vec_dot_type          = type_traits[type].vec_dot_type;
@@ -11122,6 +11151,7 @@ static void ggml_compute_forward_mul_mat(
     //   compute by src0 rows
 
 #if defined(GGML_USE_CLBLAST)
+    printf("use cblas\n");
     if (ggml_cl_can_mul_mat(src0, src1, dst)) {
         if (params->ith == 0 && params->type == GGML_TASK_TYPE_COMPUTE) {
             ggml_cl_mul_mat(src0, src1, dst, params->wdata, params->wsize);
@@ -11131,6 +11161,7 @@ static void ggml_compute_forward_mul_mat(
 #endif
 
 #if defined(GGML_USE_ACCELERATE) || defined(GGML_USE_OPENBLAS)
+    printf("use acce\n");
     if (ggml_compute_forward_mul_mat_use_blas(dst)) {
         const int64_t ne_plane      = ne01*ne00;
         const size_t  desired_wsize = ne13*ne12*ne_plane*sizeof(float);
@@ -11197,27 +11228,28 @@ static void ggml_compute_forward_mul_mat(
     }
 #endif
 
-#if GGML_USE_LLAMAFILE
-    if (src1_cont) {
-        for (int64_t i13 = 0; i13 < ne13; i13++)
-            for (int64_t i12 = 0; i12 < ne12; i12++)
-                if (!llamafile_sgemm(ne01, ne11, ne00/ggml_blck_size(src0->type),
-                                     (const char *)src0->data + i12/r2*nb02 + i13/r3*nb03,
-                                     nb01/ggml_type_size(src0->type),
-                                     (const char *)src1->data + i12*nb12 + i13*nb13,
-                                     nb11/ggml_type_size(src1->type),
-                                     (char *)dst->data + i12*nb2 + i13*nb3,
-                                     nb1/ggml_type_size(dst->type),
-                                     ith, nth,
-                                     params->type,
-                                     src0->type,
-                                     src1->type,
-                                     dst->type))
-                    goto UseGgmlGemm1;
-        return;
-    }
-UseGgmlGemm1:;
-#endif
+// #if GGML_USE_LLAMAFILE
+//     printf("use llama\n");
+//     if (src1_cont) {
+//         for (int64_t i13 = 0; i13 < ne13; i13++)
+//             for (int64_t i12 = 0; i12 < ne12; i12++)
+//                 if (!llamafile_sgemm(ne01, ne11, ne00/ggml_blck_size(src0->type),
+//                                      (const char *)src0->data + i12/r2*nb02 + i13/r3*nb03,
+//                                      nb01/ggml_type_size(src0->type),
+//                                      (const char *)src1->data + i12*nb12 + i13*nb13,
+//                                      nb11/ggml_type_size(src1->type),
+//                                      (char *)dst->data + i12*nb2 + i13*nb3,
+//                                      nb1/ggml_type_size(dst->type),
+//                                      ith, nth,
+//                                      params->type,
+//                                      src0->type,
+//                                      src1->type,
+//                                      dst->type))
+//                     goto UseGgmlGemm1;
+//         return;
+//     }
+// UseGgmlGemm1:;
+// #endif
 
     if (params->type == GGML_TASK_TYPE_INIT) {
         if (ith != 0) {
@@ -11249,38 +11281,44 @@ UseGgmlGemm1:;
 
     const void * wdata    = (src1->type == vec_dot_type) ? src1->data : params->wdata;
     const size_t row_size = ggml_row_size(vec_dot_type, ne10);
+    // 4 * 3200
+    // printf("row_size:%d\n", row_size);
 
-#if GGML_USE_LLAMAFILE
-    if (src1->type != vec_dot_type) {
-        for (int64_t i13 = 0; i13 < ne13; i13++)
-            for (int64_t i12 = 0; i12 < ne12; i12++)
-                if (!llamafile_sgemm(ne01, ne11, ne00/ggml_blck_size(src0->type),
-                                     (const char *)src0->data + i12/r2*nb02 + i13/r3*nb03,
-                                     nb01/ggml_type_size(src0->type),
-                                     (const char *)wdata + (i12*ne11 + i13*ne12*ne11)*row_size,
-                                     row_size/ggml_type_size(vec_dot_type),
-                                     (char *)dst->data + i12*nb2 + i13*nb3,
-                                     nb1/ggml_type_size(dst->type),
-                                     ith, nth,
-                                     params->type,
-                                     src0->type,
-                                     vec_dot_type,
-                                     dst->type))
-                    goto UseGgmlGemm2;
-        return;
-    }
-UseGgmlGemm2:;
-#endif
+// #if GGML_USE_LLAMAFILE
+//     if (src1->type != vec_dot_type) {
+//         for (int64_t i13 = 0; i13 < ne13; i13++)
+//             for (int64_t i12 = 0; i12 < ne12; i12++)
+//                 if (!llamafile_sgemm(ne01, ne11, ne00/ggml_blck_size(src0->type),
+//                                      (const char *)src0->data + i12/r2*nb02 + i13/r3*nb03,
+//                                      nb01/ggml_type_size(src0->type),
+//                                      (const char *)wdata + (i12*ne11 + i13*ne12*ne11)*row_size,
+//                                      row_size/ggml_type_size(vec_dot_type),
+//                                      (char *)dst->data + i12*nb2 + i13*nb3,
+//                                      nb1/ggml_type_size(dst->type),
+//                                      ith, nth,
+//                                      params->type,
+//                                      src0->type,
+//                                      vec_dot_type,
+//                                      dst->type))
+//                     goto UseGgmlGemm2;
+//         return;
+//     }
+// UseGgmlGemm2:;
+// #endif
 
     const int64_t nr0 = ne01;          // src0 rows
     const int64_t nr1 = ne1*ne12*ne13; // src1 rows
-
+    // printf("nr0:%d\n", nr0);
+    // printf("nr1:%d\n", nr1);
     //printf("nr0 = %lld, nr1 = %lld\n", nr0, nr1);
 
     // distribute the thread work across the inner or outer loop based on which one is larger
 
     const int64_t nth0 = nr0 > nr1 ? nth : 1; // parallelize by src0 rows
     const int64_t nth1 = nr0 > nr1 ? 1 : nth; // parallelize by src1 rows
+
+    // printf("nth0:%d\n", nth0);
+    // printf("nth1:%d\n", nth1);
 
     const int64_t ith0 = ith % nth0;
     const int64_t ith1 = ith / nth0;
@@ -11294,7 +11332,7 @@ UseGgmlGemm2:;
     const int64_t ir110 = dr1*ith1;
     const int64_t ir111 = MIN(ir110 + dr1, nr1);
 
-    //printf("ir010 = %6lld, ir011 = %6lld, ir110 = %6lld, ir111 = %6lld\n", ir010, ir011, ir110, ir111);
+    // printf("ir010 = %6lld, ir011 = %6lld, ir110 = %6lld, ir111 = %6lld\n", ir010, ir011, ir110, ir111);
 
     // threads with no work simply yield (not sure if it helps)
     if (ir010 >= ir011 || ir110 >= ir111) {
@@ -11311,6 +11349,7 @@ UseGgmlGemm2:;
 
     // dot kernels can handle 1 row and col at a time, but mmla kernels can process 2 rows and cols
     int64_t nrc = vec_dot_num_rows;
+    // printf("nrc:%d\n", nrc);
     // TODO: currently the mmla kernels support only even numbered rows/cols.
     // this check can be removed once they are extended to support odd numbered rows/cols too
     if ((nr0 % 2 != 0) || (ne11 % 2 != 0)) {
@@ -11318,18 +11357,37 @@ UseGgmlGemm2:;
     }
 
     const size_t src1_col_stride = src1_cont || src1->type != vec_dot_type ? row_size : nb11;
-
+    // printf("src1_col_stride:%d\n", src1_col_stride);
     // attempt to reduce false-sharing (does not seem to make a difference)
     // 16 * 2, accounting for mmla kernels
+    // printf("nb00:%d\n", nb00);
+    // printf("nb01:%d\n", nb01);
+    // printf("nb02:%d\n", nb02);
+    // printf("nb03:%d\n", nb03);
+
+    // printf("nb10:%d\n", nb10);
+    // printf("nb11:%d\n", nb11);
+    // printf("nb12:%d\n", nb12);
+    // printf("nb13:%d\n", nb13);
+
+    // printf("nb0:%d\n", nb0);
+    // printf("nb1:%d\n", nb1);
+    // printf("nb2:%d\n", nb2);
+    // printf("nb3:%d\n", nb3);
     float tmp[32];
 
     for (int64_t iir1 = ir110; iir1 < ir111; iir1 += blck_1) {
         for (int64_t iir0 = ir010; iir0 < ir011; iir0 += blck_0) {
             for (int64_t ir1 = iir1; ir1 < iir1 + blck_1 && ir1 < ir111; ir1 += nrc) {
+                // printf("iir1:%d\n", iir1);
+                // printf("iir0:%d\n", iir0);
+                // printf("ir1:%d\n", ir1);
                 const int64_t i13 = (ir1/(ne12*ne1));
                 const int64_t i12 = (ir1 - i13*ne12*ne1)/ne1;
                 const int64_t i11 = (ir1 - i13*ne12*ne1 - i12*ne1);
-
+                // printf("i13:%d\n", i13);
+                // printf("i12:%d\n", i13);
+                // printf("i11:%d\n", i11);
                 // broadcast src0 into src1
                 const int64_t i03 = i13/r3;
                 const int64_t i02 = i12/r2;
@@ -11339,7 +11397,7 @@ UseGgmlGemm2:;
                 const int64_t i3 = i13;
 
                 const char * src0_row = (const char *) src0->data + (0 + i02*nb02 + i03*nb03);
-
+                // printf("src0_row:%d\n", 0 + i02*nb02 + i03*nb03);
                 // desc: when src1 is not a contiguous memory block we have to calculate the offset using the strides
                 //       if it is, then we have either copied the data to params->wdata and made it contiguous or we are using
                 //       the original src1 data pointer, so we should index using the indices directly
@@ -11348,13 +11406,20 @@ UseGgmlGemm2:;
                     (src1_cont || src1->type != vec_dot_type
                      ? (i11      + i12*ne11 + i13*ne12*ne11)*row_size
                      : (i11*nb11 + i12*nb12 + i13*nb13));
+                // printf("src1_col:%d\n", (src1_cont || src1->type != vec_dot_type
+                    //  ? (i11      + i12*ne11 + i13*ne12*ne11)*row_size
+                    //  : (i11*nb11 + i12*nb12 + i13*nb13)));
                 float * dst_col = (float *) ((char *) dst->data + (i1*nb1 + i2*nb2 + i3*nb3));
-
+                // printf("dst_col:%d\n", (i1*nb1 + i2*nb2 + i3*nb3));
                 //for (int64_t ir0 = iir0; ir0 < iir0 + blck_0 && ir0 < ir011; ++ir0) {
                 //    vec_dot(ne00, &dst_col[ir0], src0_row + ir0*nb01, src1_col);
                 //}
 
                 for (int64_t ir0 = iir0; ir0 < iir0 + blck_0 && ir0 < ir011; ir0 += nrc) {
+                    // printf("ir0:%d\n", ir0);
+                    // iir0 -> 1 -> 100287
+                    // ir0 -> 16 in iir0
+                    // ir0 - iir0 -> 0 - 15
                     vec_dot(ne00, &tmp[ir0 - iir0], (nrc>1 ? 16 : 0), src0_row + ir0*nb01, (nrc>1 ? nb01 : 0), src1_col, (nrc>1 ? src1_col_stride : 0), nrc);
                 }
 
