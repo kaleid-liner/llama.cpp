@@ -1927,8 +1927,8 @@ static bool test_backend(ggml_backend_t backend, test_mode mode, const char * op
     //     GGML_TYPE_IQ4_NL, GGML_TYPE_IQ3_S,
     // };
     const ggml_type all_types[] = {
-        GGML_TYPE_Q2_K,
-        GGML_TYPE_Q3_K,
+        // GGML_TYPE_Q2_K,
+        // GGML_TYPE_Q3_K,
         GGML_TYPE_Q4_0,
     };
 
@@ -2044,10 +2044,24 @@ static bool test_backend(ggml_backend_t backend, test_mode mode, const char * op
             test_cases.emplace_back(new test_mul_mat(type_a, type_b,  4096, 1,  4096, { 1,  1}, {1, 1}));
             test_cases.emplace_back(new test_mul_mat(type_a, type_b, 11008, 1,  4096, { 1,  1}, {1, 1}));
             test_cases.emplace_back(new test_mul_mat(type_a, type_b,  4096, 1, 11008, { 1,  1}, {1, 1}));
+            test_cases.emplace_back(new test_mul_mat(type_a, type_b,  5120, 1,  5120, { 1,  1}, {1, 1}));
+            test_cases.emplace_back(new test_mul_mat(type_a, type_b, 13824, 1,  5120, { 1,  1}, {1, 1}));
+            test_cases.emplace_back(new test_mul_mat(type_a, type_b,  5120, 1, 13824, { 1,  1}, {1, 1}));
             test_cases.emplace_back(new test_mul_mat(type_a, type_b,  1024, 1,  8192, { 1,  1}, {1, 1}));
             test_cases.emplace_back(new test_mul_mat(type_a, type_b,  8192, 1,  8192, { 1,  1}, {1, 1}));
             test_cases.emplace_back(new test_mul_mat(type_a, type_b, 28672, 1,  8192, { 1,  1}, {1, 1}));
             test_cases.emplace_back(new test_mul_mat(type_a, type_b,  8192, 1, 28672, { 1,  1}, {1, 1}));
+
+            test_cases.emplace_back(new test_mul_mat(type_a, type_b,  4096, 256,  4096, { 1,  1}, {1, 1}));
+            test_cases.emplace_back(new test_mul_mat(type_a, type_b, 11008, 256,  4096, { 1,  1}, {1, 1}));
+            test_cases.emplace_back(new test_mul_mat(type_a, type_b,  4096, 256, 11008, { 1,  1}, {1, 1}));
+            test_cases.emplace_back(new test_mul_mat(type_a, type_b,  5120, 256,  5120, { 1,  1}, {1, 1}));
+            test_cases.emplace_back(new test_mul_mat(type_a, type_b, 13824, 256,  5120, { 1,  1}, {1, 1}));
+            test_cases.emplace_back(new test_mul_mat(type_a, type_b,  5120, 256, 13824, { 1,  1}, {1, 1}));
+            test_cases.emplace_back(new test_mul_mat(type_a, type_b,  1024, 256,  8192, { 1,  1}, {1, 1}));
+            test_cases.emplace_back(new test_mul_mat(type_a, type_b,  8192, 256,  8192, { 1,  1}, {1, 1}));
+            test_cases.emplace_back(new test_mul_mat(type_a, type_b, 28672, 256,  8192, { 1,  1}, {1, 1}));
+            test_cases.emplace_back(new test_mul_mat(type_a, type_b,  8192, 256, 28672, { 1,  1}, {1, 1}));
         }
     }
 
