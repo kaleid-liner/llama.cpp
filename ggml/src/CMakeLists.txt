@@ -838,6 +838,11 @@ if (GGML_TMAC)
             add_compile_definitions(TMAC_USE_TVM_THREADPOOL)
             set(GGML_EXTRA_LIBS ${GGML_EXTRA_LIBS} t_mac)
         else()
+            if ((NOT ${CMAKE_C_COMPILER_ID} MATCHES "Clang") OR
+                (NOT ${CMAKE_CXX_COMPILER_ID} MATCHES "Clang"))
+                message(FATAL_ERROR "Clang is required for T-MAC compilation")
+            endif()
+
             set(GGML_EXTRA_LIBS ${GGML_EXTRA_LIBS} t_mac_no_tvm)
             set(GGML_SOURCES_TMAC ${GGML_SOURCES_TMAC} ${TMAC_KERNELS_SOURCE})
         endif()
@@ -1165,7 +1170,9 @@ elseif (CMAKE_OSX_ARCHITECTURES STREQUAL "x86_64" OR CMAKE_GENERATOR_PLATFORM_LW
             # TODO: improve, should not reference files from the parent folder
             include(../cmake/FindSIMD.cmake)
         endif ()
-        if (GGML_AVX512)
+        # Can't use LLAMA_AVX512 with Clang for MSVC
+        # with error: conflicting types for '_m_prefetchw
+        if (GGML_AVX512 AND (NOT ${CMAKE_C_COMPILER_ID} MATCHES "Clang") AND (NOT ${CMAKE_CXX_COMPILER_ID} MATCHES "Clang"))
             list(APPEND ARCH_FLAGS /arch:AVX512)
             # MSVC has no compile-time flags enabling specific
             # AVX512 extensions, neither it defines the
