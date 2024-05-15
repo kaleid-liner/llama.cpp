@@ -20,43 +20,44 @@ def transform_to_i2(x):
         ans = np.bitwise_or(ans, x_bit_shift)
     return ans, scale
 
-src0_row_num = 16
+src0_row_num = 4
 src1_col_num = 1
-k_num = 16
+k_num = 4
+check_scale = np.random.rand()
 
 x = np.random.randn(k_num, src1_col_num)
 w = []
-for i in range(16 * 16):
+for i in range(src0_row_num * k_num):
      w.append(np.random.randint(-1, 2))
-w = np.array(w).reshape(src0_row_num, k_num)*2.26
+w = np.array(w).reshape(src0_row_num, k_num)*check_scale
 
-print(x)
-print(w)
+# print(x)
+# print(w)
 
-out = np.matmul(w, x)
-print(out)
+# out = np.matmul(w, x)
+# print(out)
 
 w_trans, scale = transform_to_i2(w)
-# print(w_trans)
+print(w_trans)
 
-out_ref = []
-for src0_row in range(src0_row_num):
-    for src1_col in range(src1_col_num):
-        v = 0
-        for k in range(k_num):
-            wi = k // 4
-            shift = k % 4
-            weight = w_trans[src0_row * (k_num // 4) + wi]
-            # print(weight)
-            pos = (weight >> (6 - 2 * shift)) & (3)
-            # print(pos)
-            if pos == 1:
-                v = v + x[src1_col + k]
-            elif pos == 3:
-                v = v - x[src1_col + k]
-        out_ref.append(v)
+# out_ref = []
+# for src0_row in range(src0_row_num):
+#     for src1_col in range(src1_col_num):
+#         v = 0
+#         for k in range(k_num):
+#             wi = k // 4
+#             shift = k % 4
+#             weight = w_trans[src0_row * (k_num // 4) + wi]
+#             # print(weight)
+#             pos = (weight >> (6 - 2 * shift)) & (3)
+#             # print(pos)
+#             if pos == 1:
+#                 v = v + x[src1_col + k]
+#             elif pos == 3:
+#                 v = v - x[src1_col + k]
+#         out_ref.append(v)
 
-print(np.array(out_ref)*scale)
+# print(np.array(out_ref)*scale)
             
 
 # for i in range(2):

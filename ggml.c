@@ -2000,31 +2000,67 @@ inline static void ggml_vec_argmax_f32(const int n, int * s, const float * x) {
     *s = idx;
 }
 
-inline static void ggml_vec_dot_i2_f32(int n, float * s, const float * x, uint8_t* w, float scale) {
-    ggml_float sumf = 0.0f;
-    for (int i = 0; i < n / 4; ++i) {
-        int wi = i;
+inline static void ggml_vec_dot_i2_f32(int64_t n, float * restrict s, const float * x, uint8_t* w, float scale) {
+    ggml_float sumf = 0.0;
+    #pragma unroll
+    for (int64_t i = 0; i < n; ++i) {
+        int wi = i / 4;
+        int shift = i % 4;
         uint8_t weight = w[wi];
-        for (int shift = 0; shift < 4; ++shift){
-            uint8_t pos = (weight >> (6 - 2 * shift)) & (uint8_t)(3);
-            ggml_float v = 0;
+        uint8_t pos = 0;
+        switch (shift)
+        {
+        case 0:
+            pos = (weight) & ((uint8_t)(192));
             switch (pos)
             {
-            case 0:
+            case 64:
+                sumf += (ggml_float)(x[i]);
                 break;
-            case 1:
-                v = x[i * 4 + shift];
-                break;
-            case 2:
-                break;
-            case 3:
-                v = -x[i * 4 + shift];
+            case 192:
+                sumf -= (ggml_float)(x[i]);
                 break;
             }
-            sumf += v;
+            break;
+        case 1:
+            pos = (weight) & ((uint8_t)(48));
+            switch (pos)
+            {
+            case 16:
+                sumf += (ggml_float)(x[i]);
+                break;
+            case 48:
+                sumf -= (ggml_float)(x[i]);
+                break;
+            }
+            break;
+        case 2:
+            pos = (weight) & ((uint8_t)(12));
+            switch (pos)
+            {
+            case 4:
+                sumf += (ggml_float)(x[i]);
+                break;
+            case 12:
+                sumf -= (ggml_float)(x[i]);
+                break;
+            }
+            break;
+        case 3:
+            pos = (weight) & ((uint8_t)(3));
+            switch (pos)
+            {
+            case 1:
+                sumf += (ggml_float)(x[i]);
+                break;
+            case 3:
+                sumf -= (ggml_float)(x[i]);
+                break;
+            }
+            break;
         }
     }
-    *s = sumf * scale;
+    *s = sumf * (ggml_float)scale;
 }
 
 inline static void ggml_vec_absmaxclamp_f32(const int n, float * s, const float * x, float min) {
@@ -9429,12 +9465,12 @@ static void ggml_compute_forward_bitlinear_quant_f32(
         return;
     }
 
-    printf("begin quant\n");
-    printf("%s\n", src0->name);
-    printf("%.4f\n", *(float*) ((uint8_t *)(src0->data)) + 0);
-    printf("%.4f\n", *(float*) ((uint8_t *)(src0->data)) + 1);
-    printf("%.4f\n", *(float*) ((uint8_t *)(src0->data)) + 2);
-    printf("%.4f\n", *(float*) ((uint8_t *)(src0->data)) + 3);
+    // printf("begin quant\n");
+    // printf("%s\n", src0->name);
+    // printf("%.4f\n", *(float*) ((uint8_t *)(src0->data)) + 0);
+    // printf("%.4f\n", *(float*) ((uint8_t *)(src0->data)) + 1);
+    // printf("%.4f\n", *(float*) ((uint8_t *)(src0->data)) + 2);
+    // printf("%.4f\n", *(float*) ((uint8_t *)(src0->data)) + 3);
 
     assert(src0->nb[0] == sizeof(float));
 
@@ -9464,12 +9500,12 @@ static void ggml_compute_forward_bitlinear_quant_f32(
             }
         }
     }
-    printf("after quant\n");
-    printf("%s\n", dst->name);
-    printf("%.4f\n", *(float*) ((uint8_t *)(dst->data)) + 0);
-    printf("%.4f\n", *(float*) ((uint8_t *)(dst->data)) + 1);
-    printf("%.4f\n", *(float*) ((uint8_t *)(dst->data)) + 2);
-    printf("%.4f\n", *(float*) ((uint8_t *)(dst->data)) + 3);
+    // printf("after quant\n");
+    // printf("%s\n", dst->name);
+    // printf("%.4f\n", *(float*) ((uint8_t *)(dst->data)) + 0);
+    // printf("%.4f\n", *(float*) ((uint8_t *)(dst->data)) + 1);
+    // printf("%.4f\n", *(float*) ((uint8_t *)(dst->data)) + 2);
+    // printf("%.4f\n", *(float*) ((uint8_t *)(dst->data)) + 3);
 }
 
 static void ggml_compute_forward_bitlinear_quant(
@@ -10986,10 +11022,10 @@ static void ggml_compute_forward_bitnet_mul_mat(
     const struct ggml_tensor * src1 = dst->src[1];
     const struct ggml_tensor * src2 = dst->src[2];
 
-    printf("begin mul mat\n");
-    printf("%s\n", src0->name);
-    printf("%s\n", src1->name);
-    printf("%s\n", src2->name);
+    // printf("begin mul mat\n");
+    // printf("%s\n", src0->name);
+    // printf("%s\n", src1->name);
+    // printf("%s\n", src2->name);
 
     // uint8_t *i_weight = (uint8_t*) (src0->data);
     // q_weight 3200 * 800 (uint8) -> 3200 * 3200 (uint2) 
@@ -11059,21 +11095,21 @@ static void ggml_compute_forward_bitnet_mul_mat(
         return;
     }
 
-    printf("ne03:%ld\n", ne03);
-    printf("ne02:%ld\n", ne02);
-    printf("ne01:%ld\n", ne01);
-    printf("ne00:%ld\n", ne00);
+    // printf("ne03:%ld\n", ne03);
+    // printf("ne02:%ld\n", ne02);
+    // printf("ne01:%ld\n", ne01);
+    // printf("ne00:%ld\n", ne00);
 
-    printf("nb0:%ld\n", nb0);
-    printf("nb1:%ld\n", nb1);
+    // printf("nb0:%ld\n", nb0);
+    // printf("nb1:%ld\n", nb1);
     float scale = *(float*) ((uint8_t *)(src2->data));
-    printf("scale:%f\n", scale);
+    // printf("scale:%f\n", scale);
     for (int64_t i03 = 0; i03 < ne03; i03++) {
         for (int64_t i02 = 0; i02 < ne02; i02++) {
             for (int64_t i01 = 0; i01 < ne01; i01++) {
                 float * dst_col = (float *) ((char *) dst->data + (i01 + i02*ne02 + i03*ne03) * nb0);
                 float * inp_row = (float *) ((char *) src1->data);
-                uint8_t * weight_col = (uint8_t *) ((char *) src0->data + (i01*ne01 + i02*ne02 + i03*ne03) / 4);
+                uint8_t * weight_col = (uint8_t *) ((char *) src0->data + (i01*ne00 + i02*ne02 + i03*ne03) / 4);
                 ggml_vec_dot_i2_f32(ne00, dst_col, inp_row, weight_col, scale);
             }
         }
@@ -16807,7 +16843,7 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
     if (tensor->op == GGML_OP_NONE || ggml_is_empty(tensor)) {
         return;
     }
-    printf("kernel:%d\n", tensor->op);
+    // printf("kernel:%d\n", tensor->op);
 
     switch (tensor->op) {
         case GGML_OP_DUP:
@@ -19011,26 +19047,26 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
 
                 if (n_tasks == 1) {
                     /* INIT */
-                    printf("before compute forward\n");
+                    // printf("before compute forward\n");
                     if (GGML_OP_HAS_INIT[node->op]) {
                         params.type = GGML_TASK_TYPE_INIT;
                         ggml_compute_forward(&params, node);
                     }
-                    printf("after compute forward\n");
+                    // printf("after compute forward\n");
 
                     // TODO: maybe push node_n to the atomic but if other threads see n_tasks is 1,
                     // they do something more efficient than spinning (?)
-                    printf("%s\n", node->name);
+                    // printf("%s\n", node->name);
                     params.type = GGML_TASK_TYPE_COMPUTE;
-                    printf("before vital compute forward2\n");
+                    // printf("before vital compute forward2\n");
                     ggml_compute_forward(&params, node);
-                    printf("after compute forward2\n");
+                    // printf("after compute forward2\n");
                     if (GGML_OP_HAS_FINALIZE[node->op]) {
-                        printf("begin finalize\n");
+                        // printf("begin finalize\n");
                         params.type = GGML_TASK_TYPE_FINALIZE;
                         ggml_compute_forward(&params, node);
                     }
-                    printf("after compute forward3\n");
+                    // printf("after compute forward3\n");
                     ggml_graph_compute_perf_stats_node(node, state->shared);
                 } else {
                     break;
@@ -19351,11 +19387,11 @@ enum ggml_status ggml_graph_compute(struct ggml_cgraph * cgraph, struct ggml_cpl
 
     const int64_t perf_start_cycles  = ggml_perf_cycles();
     const int64_t perf_start_time_us = ggml_perf_time_us();
-    printf("this thread\n");
+    // printf("this thread\n");
     // this is a work thread too
     ggml_graph_compute_thread(&workers[0]);
     enum ggml_status compute_status = workers[0].ec;
-    printf("end thread\n");
+    // printf("end thread\n");
     // don't leave affinity set on the main thread
     clear_numa_thread_affinity();
 

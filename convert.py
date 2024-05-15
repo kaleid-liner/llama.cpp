@@ -722,6 +722,7 @@ def bf16_to_fp32(bf16_arr: np.ndarray[Any, np.dtype[np.uint16]]) -> NDArray:
     return fp32_arr.view(np.float32)
 
 def transform_to_i2(x : NDArray):
+    # print(x.dtype)
     x_num = np.prod(x.shape)
     x = np.reshape(x, x_num)
     scale = 1
@@ -739,6 +740,7 @@ def transform_to_i2(x : NDArray):
         x_bit_shift = np.left_shift(x_bit_col, 6 - i * 2)
         x_bit_shift = np.bitwise_and(x_bit_shift, keep_bit[i])
         ans = np.bitwise_or(ans, x_bit_shift)
+    # print(scale.dtype)
     return ans, scale
 
 class UnquantizedTensor(Tensor):
@@ -1220,12 +1222,6 @@ class OutputFile:
             scale_data_type = np.float32
             scale_nbytes = 4
             self.gguf.add_tensor_info(scale_name, scale_shape, scale_data_type, scale_nbytes, raw_dtype=None)
-        # print(tensor.data_type.name)
-        # print(name)
-        # print(tensor.shape)
-        # print(data_type)
-        # print(data_nbytes)
-        # print(raw_dtype)
         self.gguf.add_tensor_info(name, tensor.shape, data_type, data_nbytes, raw_dtype=raw_dtype)
 
     def write_meta(self) -> None:
