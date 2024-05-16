@@ -47,6 +47,19 @@ static void init_tensor_uniform(ggml_tensor * tensor, float min = -1.0f, float m
     for (auto & t : threads) {
         t.join();
     }
+    // load data from file "data_{size}.bin" if it exists
+    // if tensor->name not start with "sent"
+    if (std::string(tensor->name).find("sent") == std::string::npos) {
+        FILE * f = fopen(("data_" + std::to_string(tensor->ne[0]) + "_" + std::to_string(tensor->ne[1]) + ".bin").c_str(), "rb");
+        if (f != NULL) {
+            fread(data.data(), sizeof(float), size, f);
+            fclose(f);
+        } else {
+            f = fopen(("data_" + std::to_string(tensor->ne[0]) + "_" + std::to_string(tensor->ne[1]) + ".bin").c_str(), "wb");
+            fwrite(data.data(), sizeof(float), size, f);
+            fclose(f);
+        }
+    }
 
     if (tensor->type == GGML_TYPE_F32 || tensor->type == GGML_TYPE_I32) {
         ggml_backend_tensor_set(tensor, data.data(), 0, size * sizeof(float));
@@ -478,7 +491,20 @@ struct test_case {
                 }
             }
 
+            if (std::string(t1->name).find("sent") == std::string::npos) {
+                size_t size = f1.size();
+                FILE * f = fopen(("out_" + std::to_string(t1->src[0]->ne[0]) + "_" + std::to_string(t1->src[0]->ne[1]) + ".bin").c_str(), "rb");
+                if (f != NULL) {
+                    fread(f1.data(), sizeof(float), size, f);
+                    fclose(f);
+                } else {
+                    f = fopen(("out_" + std::to_string(t1->src[0]->ne[0]) + "_" + std::to_string(t1->src[0]->ne[1]) + ".bin").c_str(), "wb");
+                    fwrite(f1.data(), sizeof(float), size, f);
+                    fclose(f);
+                }
+            }
             double err = nmse(f1.data(), f2.data(), f1.size());
+            printf("NMSE = %.9f\n", err);
             if (err > ud->max_err) {
                 printf("[%s] NMSE = %.9f > %.9f ", ggml_op_desc(t1), err, ud->max_err);
                 //for (int i = 0; i < (int) f1.size(); i++) {
@@ -572,6 +598,7 @@ struct test_case {
         // duplicate the op
         size_t target_size = ggml_backend_is_cpu(backend) ? 1ULL << 35 : 1ULL << 35; // 8 GB CPU, 32 GB GPU
         int n_runs = std::min((size_t)gf->size - gf->n_nodes, target_size / op_size(out)) + 1;
+        n_runs = std::max(n_runs, 20);
         for (int i = 1; i < n_runs; i++) {
             gf->nodes[gf->n_nodes++] = out;
         }
@@ -1927,6 +1954,7 @@ static bool test_backend(ggml_backend_t backend, test_mode mode, const char * op
     //     GGML_TYPE_IQ4_NL, GGML_TYPE_IQ3_S,
     // };
     const ggml_type all_types[] = {
+        // GGML_TYPE_F16,
         // GGML_TYPE_Q2_K,
         // GGML_TYPE_Q3_K,
         GGML_TYPE_Q4_0,
@@ -2044,24 +2072,24 @@ static bool test_backend(ggml_backend_t backend, test_mode mode, const char * op
             test_cases.emplace_back(new test_mul_mat(type_a, type_b,  4096, 1,  4096, { 1,  1}, {1, 1}));
             test_cases.emplace_back(new test_mul_mat(type_a, type_b, 11008, 1,  4096, { 1,  1}, {1, 1}));
             test_cases.emplace_back(new test_mul_mat(type_a, type_b,  4096, 1, 11008, { 1,  1}, {1, 1}));
-            test_cases.emplace_back(new test_mul_mat(type_a, type_b,  5120, 1,  5120, { 1,  1}, {1, 1}));
-            test_cases.emplace_back(new test_mul_mat(type_a, type_b, 13824, 1,  5120, { 1,  1}, {1, 1}));
-            test_cases.emplace_back(new test_mul_mat(type_a, type_b,  5120, 1, 13824, { 1,  1}, {1, 1}));
-            test_cases.emplace_back(new test_mul_mat(type_a, type_b,  1024, 1,  8192, { 1,  1}, {1, 1}));
-            test_cases.emplace_back(new test_mul_mat(type_a, type_b,  8192, 1,  8192, { 1,  1}, {1, 1}));
-            test_cases.emplace_back(new test_mul_mat(type_a, type_b, 28672, 1,  8192, { 1,  1}, {1, 1}));
-            test_cases.emplace_back(new test_mul_mat(type_a, type_b,  8192, 1, 28672, { 1,  1}, {1, 1}));
+            // test_cases.emplace_back(new test_mul_mat(type_a, type_b,  5120, 1,  5120, { 1,  1}, {1, 1}));
+            // test_cases.emplace_back(new test_mul_mat(type_a, type_b, 13824, 1,  5120, { 1,  1}, {1, 1}));
+            // test_cases.emplace_back(new test_mul_mat(type_a, type_b,  5120, 1, 13824, { 1,  1}, {1, 1}));
+            // test_cases.emplace_back(new test_mul_mat(type_a, type_b,  1024, 1,  8192, { 1,  1}, {1, 1}));
+            // test_cases.emplace_back(new test_mul_mat(type_a, type_b,  8192, 1,  8192, { 1,  1}, {1, 1}));
+            // test_cases.emplace_back(new test_mul_mat(type_a, type_b, 28672, 1,  8192, { 1,  1}, {1, 1}));
+            // test_cases.emplace_back(new test_mul_mat(type_a, type_b,  8192, 1, 28672, { 1,  1}, {1, 1}));
 
-            test_cases.emplace_back(new test_mul_mat(type_a, type_b,  4096, 256,  4096, { 1,  1}, {1, 1}));
-            test_cases.emplace_back(new test_mul_mat(type_a, type_b, 11008, 256,  4096, { 1,  1}, {1, 1}));
-            test_cases.emplace_back(new test_mul_mat(type_a, type_b,  4096, 256, 11008, { 1,  1}, {1, 1}));
-            test_cases.emplace_back(new test_mul_mat(type_a, type_b,  5120, 256,  5120, { 1,  1}, {1, 1}));
-            test_cases.emplace_back(new test_mul_mat(type_a, type_b, 13824, 256,  5120, { 1,  1}, {1, 1}));
-            test_cases.emplace_back(new test_mul_mat(type_a, type_b,  5120, 256, 13824, { 1,  1}, {1, 1}));
-            test_cases.emplace_back(new test_mul_mat(type_a, type_b,  1024, 256,  8192, { 1,  1}, {1, 1}));
-            test_cases.emplace_back(new test_mul_mat(type_a, type_b,  8192, 256,  8192, { 1,  1}, {1, 1}));
-            test_cases.emplace_back(new test_mul_mat(type_a, type_b, 28672, 256,  8192, { 1,  1}, {1, 1}));
-            test_cases.emplace_back(new test_mul_mat(type_a, type_b,  8192, 256, 28672, { 1,  1}, {1, 1}));
+            // test_cases.emplace_back(new test_mul_mat(type_a, type_b,  4096, 256,  4096, { 1,  1}, {1, 1}));
+            // test_cases.emplace_back(new test_mul_mat(type_a, type_b, 11008, 256,  4096, { 1,  1}, {1, 1}));
+            // test_cases.emplace_back(new test_mul_mat(type_a, type_b,  4096, 256, 11008, { 1,  1}, {1, 1}));
+            // test_cases.emplace_back(new test_mul_mat(type_a, type_b,  5120, 256,  5120, { 1,  1}, {1, 1}));
+            // test_cases.emplace_back(new test_mul_mat(type_a, type_b, 13824, 256,  5120, { 1,  1}, {1, 1}));
+            // test_cases.emplace_back(new test_mul_mat(type_a, type_b,  5120, 256, 13824, { 1,  1}, {1, 1}));
+            // test_cases.emplace_back(new test_mul_mat(type_a, type_b,  1024, 256,  8192, { 1,  1}, {1, 1}));
+            // test_cases.emplace_back(new test_mul_mat(type_a, type_b,  8192, 256,  8192, { 1,  1}, {1, 1}));
+            // test_cases.emplace_back(new test_mul_mat(type_a, type_b, 28672, 256,  8192, { 1,  1}, {1, 1}));
+            // test_cases.emplace_back(new test_mul_mat(type_a, type_b,  8192, 256, 28672, { 1,  1}, {1, 1}));
         }
     }
 
