@@ -502,9 +502,9 @@ extern "C" {
         GGML_OP_CROSS_ENTROPY_LOSS,
         GGML_OP_CROSS_ENTROPY_LOSS_BACK,
 
-        GGML_OP_COUNT,
         GGML_OP_BITLINEAR_QUANT,
         GGML_OP_BITNET_MUL_MAT,
+        GGML_OP_COUNT,
     };
 
     enum ggml_unary_op {

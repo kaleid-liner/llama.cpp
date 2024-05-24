@@ -1496,6 +1496,7 @@ inline static void ggml_vec_cpy_f32 (const int n, float * y, const float * x)   
 inline static void ggml_vec_neg_f32 (const int n, float * y, const float * x)                  { for (int i = 0; i < n; ++i) y[i]  = -x[i];       }
 inline static void ggml_vec_mul_f32 (const int n, float * z, const float * x, const float * y) { for (int i = 0; i < n; ++i) z[i]  = x[i]*y[i];   }
 inline static void ggml_vec_div_f32 (const int n, float * z, const float * x, const float * y) { for (int i = 0; i < n; ++i) z[i]  = x[i]/y[i];   }
+inline static void ggml_vec_mul_f32_bitnet (const int n, float * y, const float x) { for (int i = 0; i < n; ++i) y[i]  = y[i] * x;   }
 
 static void ggml_vec_dot_f32(int n, float * restrict s, size_t bs, const float * restrict x, size_t bx, const float * restrict y, size_t by, int nrc) {
    assert(nrc == 1);
@@ -2000,7 +2001,7 @@ inline static void ggml_vec_argmax_f32(const int n, int * s, const float * x) {
     *s = idx;
 }
 
-inline static void ggml_vec_dot_i2_f32(int64_t n, float * restrict s, const float * x, uint8_t* w, float scale) {
+inline static void ggml_vec_dot_i2_f32(int64_t n, float * restrict s, const float * x, uint8_t* w) {
     ggml_float sumf = 0.0;
     #pragma unroll
     for (int64_t i = 0; i < n; ++i) {
@@ -2060,7 +2061,82 @@ inline static void ggml_vec_dot_i2_f32(int64_t n, float * restrict s, const floa
             break;
         }
     }
-    *s = sumf * (ggml_float)scale;
+    *s = sumf;
+}
+
+inline static void ggml_vec_dot_i2_q80(int64_t n, float * restrict s, const void * vx, uint8_t* vy) {
+    const int qk = QK8_0;
+    const int nb = n / qk;
+
+    const block_q8_0 * restrict x = vx;
+    const uint8_t * restrict y = vy;
+
+    ggml_float sumf = 0.0;
+
+    for (int i = 0; i < nb; i++) {
+        int sumi = 0;
+
+        for (int j = 0; j < qk; j++) {
+            int shift = (i*qk + j) % 4;
+            uint8_t pos = 0;
+            uint8_t weight = y[(i*qk + j) / 4];
+            int idx = j;
+        switch (shift)
+        {
+        case 0:
+            pos = (weight) & ((uint8_t)(192));
+            switch (pos)
+            {
+            case 64:
+                sumi += x[i].qs[idx];
+                break;
+            case 192:
+                sumi -= x[i].qs[idx];
+                break;
+            }
+            break;
+        case 1:
+            pos = (weight) & ((uint8_t)(48));
+            switch (pos)
+            {
+            case 16:
+                sumi += x[i].qs[idx];
+                break;
+            case 48:
+                sumi -= x[i].qs[idx];
+                break;
+            }
+            break;
+        case 2:
+            pos = (weight) & ((uint8_t)(12));
+            switch (pos)
+            {
+            case 4:
+                sumi += x[i].qs[idx];
+                break;
+            case 12:
+                sumi -= x[i].qs[idx];
+                break;
+            }
+            break;
+        case 3:
+            pos = (weight) & ((uint8_t)(3));
+            switch (pos)
+            {
+            case 1:
+                sumi += x[i].qs[idx];
+                break;
+            case 3:
+                sumi -= x[i].qs[idx];
+                break;
+            }
+            break;
+        }
+        }
+
+        sumf += sumi*(GGML_FP16_TO_FP32(x[i].d));
+    }
+    *s = sumf;
 }
 
 inline static void ggml_vec_absmaxclamp_f32(const int n, float * s, const float * x, float min) {
@@ -2171,9 +2247,11 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
 
     "CROSS_ENTROPY_LOSS",
     "CROSS_ENTROPY_LOSS_BACK",
+    "BITLINEAR_QUANT",
+    "BITNET_MUL_MAT",
 };
 
-static_assert(GGML_OP_COUNT == 77, "GGML_OP_COUNT != 77");
+static_assert(GGML_OP_COUNT == 79, "GGML_OP_COUNT != 79");
 
 static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "none",
@@ -2262,9 +2340,12 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
 
     "cross_entropy_loss(x,y)",
     "cross_entropy_loss_back(x,y)",
+
+    "bitlinear(x)",
+    "bitnet_mul_mat(x,y)"
 };
 
-static_assert(GGML_OP_COUNT == 77, "GGML_OP_COUNT != 77");
+static_assert(GGML_OP_COUNT == 79, "GGML_OP_COUNT != 79");
 
 static_assert(GGML_OP_POOL_COUNT == 2, "GGML_OP_POOL_COUNT != 2");
 
@@ -11087,13 +11168,38 @@ static void ggml_compute_forward_bitnet_mul_mat(
     // broadcast factors
     const int64_t r2 = ne12/ne02;
     const int64_t r3 = ne13/ne03;
-
+    int vec_dot_type = GGML_TYPE_Q8_0;
     // nb01 >= nb00 - src0 is not transposed
     //   compute by src0 rows
 
-    if (params->type == GGML_TASK_TYPE_INIT || params->type == GGML_TASK_TYPE_FINALIZE) {
+    if (params->type == GGML_TASK_TYPE_INIT) {
+        if (ith != 0) {
+            return;
+        }
+
+        char * wdata = params->wdata;
+        const size_t row_size = ggml_row_size(GGML_TYPE_Q8_0, ne00);
+
+        assert(params->wsize >= ne11*ne12*ne13*row_size);
+        GGML_ASSERT(src1->type == GGML_TYPE_F32);
+
+        for (int64_t i13 = 0; i13 < ne13; ++i13) {
+            for (int64_t i12 = 0; i12 < ne12; ++i12) {
+                for (int64_t i11 = 0; i11 < ne11; ++i11) {
+                    quantize_row_q8_0((float *)((char *) src1->data + i13*nb13 + i12*nb12 + i11*nb11), (void *) wdata, ne00);
+                        wdata += row_size;
+                }
+            }
+        }
+    }
+
+    if (params->type == GGML_TASK_TYPE_FINALIZE) {
         return;
     }
+
+
+    const void * wdata = params->wdata;
+    const size_t row_size = ggml_row_size(vec_dot_type, ne00);
 
     // printf("ne03:%ld\n", ne03);
     // printf("ne02:%ld\n", ne02);
@@ -11108,13 +11214,18 @@ static void ggml_compute_forward_bitnet_mul_mat(
         for (int64_t i02 = 0; i02 < ne02; i02++) {
             for (int64_t i01 = 0; i01 < ne01; i01++) {
                 float * dst_col = (float *) ((char *) dst->data + (i01 + i02*ne02 + i03*ne03) * nb0);
-                float * inp_row = (float *) ((char *) src1->data);
+                float * inp_row = (const char *) wdata;
                 uint8_t * weight_col = (uint8_t *) ((char *) src0->data + (i01*ne00 + i02*ne02 + i03*ne03) / 4);
-                ggml_vec_dot_i2_f32(ne00, dst_col, inp_row, weight_col, scale);
+                ggml_vec_dot_i2_q80(ne00, dst_col, inp_row, weight_col);
             }
         }
     }
+
+    float * dst_row = (float *) ((char *) dst->data);
+    ggml_vec_mul_f32_bitnet(ne00, dst_row, scale);
+
 }
+
 
 
 static void ggml_compute_forward_mul_mat(
