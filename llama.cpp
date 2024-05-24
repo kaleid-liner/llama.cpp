@@ -8976,7 +8976,7 @@ struct llm_build_context {
 
                 cur = llm_build_kqv(ctx0, model, hparams, cparams, kv_self, gf,
                         model.layers[il].wo, model.layers[il].bo, 
-                        Qcur, KQ_mask, nullptr, n_tokens, n_kv, 1.0f/sqrtf(float(n_embd_head)), cb, 0,
+                        Qcur, KQ_mask, nullptr, n_tokens, n_kv, 1.0f/sqrtf(float(n_embd_head)), cb, il,
                         model.layers[il].attn_sub_norm, model.layers[il].wo_scale, isbitnet);
                 cb(cur, "kqv_out", 0);
             }

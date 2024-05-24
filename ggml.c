@@ -2069,17 +2069,22 @@ inline static void ggml_vec_dot_i2_q80(int64_t n, float * restrict s, const void
     const int nb = n / qk;
 
     const block_q8_0 * restrict x = vx;
-    const uint8_t * restrict y = vy;
+    const uint8_t    * restrict y = vy;
 
     ggml_float sumf = 0.0;
 
     for (int i = 0; i < nb; i++) {
+        // int sumi0 = 0;
+        // int sumi1 = 0;
+        // int sumi2 = 0;
+        // int sumi0 = 0;
         int sumi = 0;
 
         for (int j = 0; j < qk; j++) {
             int shift = (i*qk + j) % 4;
             uint8_t pos = 0;
             uint8_t weight = y[(i*qk + j) / 4];
+            // sumi0 += (weight >> 6 & 0x03)
             int idx = j;
         switch (shift)
         {
@@ -2387,6 +2392,7 @@ static void ggml_setup_op_has_task_pass(void) {
 
         p[GGML_OP_ACC                    ] = true;
         p[GGML_OP_MUL_MAT                ] = true;
+        p[GGML_OP_BITNET_MUL_MAT         ] = true;
         p[GGML_OP_MUL_MAT_ID             ] = true;
         p[GGML_OP_OUT_PROD               ] = true;
         p[GGML_OP_SET                    ] = true;
@@ -11173,12 +11179,21 @@ static void ggml_compute_forward_bitnet_mul_mat(
     //   compute by src0 rows
 
     if (params->type == GGML_TASK_TYPE_INIT) {
+        // printf("ne03:%ld\n", ne03);
+        // printf("ne02:%ld\n", ne02);
+        // printf("ne01:%ld\n", ne01);
+        // printf("ne00:%ld\n", ne00);
+        // printf("ne13:%ld\n", ne13);
+        // printf("ne12:%ld\n", ne12);
+        // printf("ne11:%ld\n", ne11);
+        // printf("ne10:%ld\n", ne10);
         if (ith != 0) {
             return;
         }
 
         char * wdata = params->wdata;
         const size_t row_size = ggml_row_size(GGML_TYPE_Q8_0, ne00);
+        // printf("row_size:%ld\n", row_size);
 
         assert(params->wsize >= ne11*ne12*ne13*row_size);
         GGML_ASSERT(src1->type == GGML_TYPE_F32);
@@ -11221,8 +11236,12 @@ static void ggml_compute_forward_bitnet_mul_mat(
         }
     }
 
-    float * dst_row = (float *) ((char *) dst->data);
-    ggml_vec_mul_f32_bitnet(ne00, dst_row, scale);
+    for (int64_t i03 = 0; i03 < ne03; i03++) {
+        for (int64_t i02 = 0; i02 < ne02; i02++) {
+            float * dst_row = (float *) ((char *) dst->data);
+            ggml_vec_mul_f32_bitnet(ne01, dst_row + i02*ne02 + i03*ne03, scale);
+        }
+    }
 
 }
 
@@ -11399,13 +11418,21 @@ static void ggml_compute_forward_mul_mat(
 // #endif
 
     if (params->type == GGML_TASK_TYPE_INIT) {
+        // printf("ne03:%ld\n", ne03);
+        // printf("ne02:%ld\n", ne02);
+        // printf("ne01:%ld\n", ne01);
+        // printf("ne00:%ld\n", ne00);
+        // printf("ne13:%ld\n", ne03);
+        // printf("ne12:%ld\n", ne02);
+        // printf("ne11:%ld\n", ne01);
+        // printf("ne10:%ld\n", ne00);
         if (ith != 0) {
             return;
         }
         if (src1->type != vec_dot_type) {
             char * wdata = params->wdata;
             const size_t row_size = ggml_row_size(vec_dot_type, ne10);
-
+            // printf("row_size:%ld\n", row_size);
             assert(params->wsize >= ne11*ne12*ne13*row_size);
             GGML_ASSERT(src1->type == GGML_TYPE_F32);
 
@@ -19229,7 +19256,7 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
             //       since it is not clear what is the best approach, it should potentially become user-configurable
             //       ref: https://github.com/ggerganov/ggml/issues/291
             // UPD:  adding the do_yield flag seems to resolve the issue universally
-            const bool do_yield = node_n < 0 || cgraph->nodes[node_n]->op == GGML_OP_MUL_MAT;
+            const bool do_yield = node_n < 0 || cgraph->nodes[node_n]->op == GGML_OP_MUL_MAT || cgraph->nodes[node_n]->op == GGML_OP_BITNET_MUL_MAT;
             ggml_graph_compute_thread_sync_task(&task_phase, state, do_yield);
         }
 
@@ -19298,22 +19325,29 @@ struct ggml_cplan ggml_graph_plan(const struct ggml_cgraph * cgraph, int n_threa
                 {
                     const enum ggml_type vec_dot_type = type_traits[node->src[0]->type].vec_dot_type;
 
-#if defined(GGML_USE_CLBLAST)
-                    if (ggml_cl_can_mul_mat(node->src[0], node->src[1], node)) {
-                        cur = ggml_cl_mul_mat_get_wsize(node->src[0], node->src[1], node);
-                    } else
-#endif
-#if defined(GGML_USE_ACCELERATE) || defined(GGML_USE_OPENBLAS)
-                    if (ggml_compute_forward_mul_mat_use_blas(node)) {
-                        if (node->src[0]->type != GGML_TYPE_F32) {
-                            // here we need memory for fully dequantized matrix from src0
-                            // take into account that src0 can be broadcasted into src1[2,3]
-                            cur = ggml_type_size(GGML_TYPE_F32)
-                                * node->src[0]->ne[0]*node->src[0]->ne[1]
-                                * node->src[1]->ne[2]*node->src[1]->ne[3];
-                        }
-                    } else
-#endif
+// #if defined(GGML_USE_CLBLAST)
+//                     if (ggml_cl_can_mul_mat(node->src[0], node->src[1], node)) {
+//                         cur = ggml_cl_mul_mat_get_wsize(node->src[0], node->src[1], node);
+//                     } else
+// #endif
+// #if defined(GGML_USE_ACCELERATE) || defined(GGML_USE_OPENBLAS)
+//                     if (ggml_compute_forward_mul_mat_use_blas(node)) {
+//                         if (node->src[0]->type != GGML_TYPE_F32) {
+//                             // here we need memory for fully dequantized matrix from src0
+//                             // take into account that src0 can be broadcasted into src1[2,3]
+//                             cur = ggml_type_size(GGML_TYPE_F32)
+//                                 * node->src[0]->ne[0]*node->src[0]->ne[1]
+//                                 * node->src[1]->ne[2]*node->src[1]->ne[3];
+//                         }
+//                     } else
+// #endif
+                    if (node->src[1]->type != vec_dot_type) {
+                        cur = ggml_row_size(vec_dot_type, ggml_nelements(node->src[1]));
+                    }
+                } break;
+            case GGML_OP_BITNET_MUL_MAT:
+                {
+                    const enum ggml_type vec_dot_type = type_traits[node->src[0]->type].vec_dot_type;
                     if (node->src[1]->type != vec_dot_type) {
                         cur = ggml_row_size(vec_dot_type, ggml_nelements(node->src[1]));
                     }
