@@ -1,35 +1,48 @@
 import numpy as np
 
-def transform_to_i2(x):
-    x_num = np.prod(x.shape)
-    x = np.reshape(x, x_num)
-    scale = 1
-    for i in range(x_num):
-        if x[i] != 0:
-            scale = x[i]
-            break
-    x = np.divide(x, scale)
-    x = x.astype(np.uint8)
-    x = np.reshape(x, [x.shape[0] // 4, 4])
-    keep_bit = {0:192, 1:48, 2:12, 3:3}
-    ans = np.zeros([x_num // 4], dtype=np.uint8)
-    for i in range(4):
-        x_bit_col = x[:, i]
-        x_bit_shift = np.left_shift(x_bit_col, 6 - i * 2)
-        x_bit_shift = np.bitwise_and(x_bit_shift, keep_bit[i])
-        ans = np.bitwise_or(ans, x_bit_shift)
-    return ans, scale
+num = ['00', '01', '00', 'ff']
 
-src0_row_num = 4
-src1_col_num = 1
-k_num = 4
-check_scale = np.random.rand()
+check = []
 
-x = np.random.randn(k_num, src1_col_num)
-w = []
-for i in range(src0_row_num * k_num):
-     w.append(np.random.randint(-1, 2))
-w = np.array(w).reshape(src0_row_num, k_num)*check_scale
+for i in range(4):
+    for j in range(4):
+        for m in range(4):
+            check.append('\n')
+            for n in range(4):
+                check.append('0x' + num[n] + num[m] + num[j] + num[i] + ', ')
+
+print(''.join(check))
+
+# def transform_to_i2(x):
+#     x_num = np.prod(x.shape)
+#     x = np.reshape(x, x_num)
+#     scale = 1
+#     for i in range(x_num):
+#         if x[i] != 0:
+#             scale = x[i]
+#             break
+#     x = np.divide(x, scale)
+#     x = x.astype(np.uint8)
+#     x = np.reshape(x, [x.shape[0] // 4, 4])
+#     keep_bit = {0:192, 1:48, 2:12, 3:3}
+#     ans = np.zeros([x_num // 4], dtype=np.uint8)
+#     for i in range(4):
+#         x_bit_col = x[:, i]
+#         x_bit_shift = np.left_shift(x_bit_col, 6 - i * 2)
+#         x_bit_shift = np.bitwise_and(x_bit_shift, keep_bit[i])
+#         ans = np.bitwise_or(ans, x_bit_shift)
+#     return ans, scale
+
+# src0_row_num = 4
+# src1_col_num = 1
+# k_num = 4
+# check_scale = np.random.rand()
+
+# x = np.random.randn(k_num, src1_col_num)
+# w = []
+# for i in range(src0_row_num * k_num):
+#      w.append(np.random.randint(-1, 2))
+# w = np.array(w).reshape(src0_row_num, k_num)*check_scale
 
 # print(x)
 # print(w)
@@ -37,8 +50,8 @@ w = np.array(w).reshape(src0_row_num, k_num)*check_scale
 # out = np.matmul(w, x)
 # print(out)
 
-w_trans, scale = transform_to_i2(w)
-print(w_trans)
+# w_trans, scale = transform_to_i2(w)
+# print(w_trans)
 
 # out_ref = []
 # for src0_row in range(src0_row_num):

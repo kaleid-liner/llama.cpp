@@ -1,6 +1,7 @@
 #define _CRT_SECURE_NO_DEPRECATE // Disables ridiculous "unsafe" warnings on Windows
 #define _USE_MATH_DEFINES // For M_PI on MSVC
-
+#define GGML_COMMON_IMPL_C
+#include "ggml-common.h"
 #include "ggml-impl.h"
 #include "ggml-quants.h"
 #include "ggml.h"
@@ -2083,60 +2084,14 @@ inline static void ggml_vec_dot_i2_q80(int64_t n, float * restrict s, const void
         for (int j = 0; j < qk; j++) {
             int shift = (i*qk + j) % 4;
             uint8_t pos = 0;
-            uint8_t weight = y[(i*qk + j) / 4];
-            // sumi0 += (weight >> 6 & 0x03)
-            int idx = j;
-        switch (shift)
-        {
-        case 0:
-            pos = (weight) & ((uint8_t)(192));
-            switch (pos)
-            {
-            case 64:
-                sumi += x[i].qs[idx];
-                break;
-            case 192:
-                sumi -= x[i].qs[idx];
-                break;
-            }
-            break;
-        case 1:
-            pos = (weight) & ((uint8_t)(48));
-            switch (pos)
-            {
-            case 16:
-                sumi += x[i].qs[idx];
-                break;
-            case 48:
-                sumi -= x[i].qs[idx];
-                break;
-            }
-            break;
-        case 2:
-            pos = (weight) & ((uint8_t)(12));
-            switch (pos)
-            {
-            case 4:
-                sumi += x[i].qs[idx];
-                break;
-            case 12:
-                sumi -= x[i].qs[idx];
-                break;
-            }
-            break;
-        case 3:
-            pos = (weight) & ((uint8_t)(3));
-            switch (pos)
-            {
-            case 1:
-                sumi += x[i].qs[idx];
-                break;
-            case 3:
-                sumi -= x[i].qs[idx];
-                break;
-            }
-            break;
-        }
+            int8_t* weight = (const int8_t *)(i2_q8 + y[(i*qk + j) / 4]);
+            sumi += x[i].qs[j] * weight[shift];
+            // printf("%d\n",shift);
+            // printf("%d\n",y[(i*qk + j) / 4]);
+            // printf("%d\n",weight[0]);
+            // printf("%d\n",weight[1]);
+            // printf("%d\n",weight[2]);
+            // printf("%d\n",weight[3]);
         }
 
         sumf += sumi*(GGML_FP16_TO_FP32(x[i].d));
