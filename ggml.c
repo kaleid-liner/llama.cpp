@@ -2075,26 +2075,20 @@ inline static void ggml_vec_dot_i2_q80(int64_t n, float * restrict s, const void
     ggml_float sumf = 0.0;
 
     for (int i = 0; i < nb; i++) {
-        // int sumi0 = 0;
-        // int sumi1 = 0;
-        // int sumi2 = 0;
-        // int sumi0 = 0;
-        int sumi = 0;
+        int sumi0 = 0;
+        int sumi1 = 0;
+        int sumi2 = 0;
+        int sumi3 = 0;
 
-        for (int j = 0; j < qk; j++) {
-            int shift = (i*qk + j) % 4;
-            uint8_t pos = 0;
-            int8_t* weight = (const int8_t *)(i2_q8 + y[(i*qk + j) / 4]);
-            sumi += x[i].qs[j] * weight[shift];
-            // printf("%d\n",shift);
-            // printf("%d\n",y[(i*qk + j) / 4]);
-            // printf("%d\n",weight[0]);
-            // printf("%d\n",weight[1]);
-            // printf("%d\n",weight[2]);
-            // printf("%d\n",weight[3]);
+        for (int j = 0; j < qk / 4; j++) {
+            int8_t* weight = (const int8_t *)(i2_q8 + y[(i*qk/4 + j)]);
+            sumi0 += x[i].qs[4*j+0] * weight[0];
+            sumi1 += x[i].qs[4*j+1] * weight[1];
+            sumi2 += x[i].qs[4*j+2] * weight[2];
+            sumi3 += x[i].qs[4*j+3] * weight[3];
         }
 
-        sumf += sumi*(GGML_FP16_TO_FP32(x[i].d));
+        sumf += (sumi0 + sumi1 + sumi2 + sumi3)*(GGML_FP16_TO_FP32(x[i].d));
     }
     *s = sumf;
 }
