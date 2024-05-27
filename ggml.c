@@ -114,6 +114,10 @@ typedef void * thread_ret_t;
 #include <hbwmalloc.h>
 #endif
 
+#if defined(GGML_USE_TMAC)
+#include "ggml-tmac.h"
+#endif
+
 #if defined(__APPLE__)
 #include <TargetConditionals.h>
 #endif
@@ -2897,6 +2901,8 @@ struct ggml_context * ggml_init(struct ggml_init_params params) {
 
 #if defined(GGML_USE_CLBLAST)
         ggml_cl_init();
+#elif defined(GGML_USE_TMAC)
+        ggml_tmac_init();
 #endif
 
         ggml_setup_op_has_task_pass();
@@ -11366,6 +11372,125 @@ static void ggml_compute_forward_mul_mat(
 // UseGgmlGemm1:;
 // #endif
 
+#if defined(GGML_USE_TMAC)
+    if (ggml_tmac_can_mul_mat(src0, src1, dst)) {
+        if (params->type == GGML_TASK_FINALIZE) {
+            return;
+        }
+
+        const int bits = ggml_tmac_get_type_bits(type);
+        // src0: weight,     ne00 = k, ne01 = n
+        // src1: activation, ne10 = k, ne11 = m
+        char * wdata = params->wdata;
+
+        // g = 4
+        int8_t * qlut = wdata;
+        tmac_float_type * lut_scales = (tmac_float_type *) (qlut + ne10 * ne11 * 4);
+        if (params->type == GGML_TASK_INIT) {
+            if (ith != 0) {
+                return;
+            }
+            // Transform tensor if not already transformed
+            // Although we have done this in file `llama.cpp`,
+            // we still need to do it here for non-model inference, e.g., test-backend-ops.cpp.
+            // It's better to do this in ggml-backend.c,
+            // but llama.cpp directly manipulates tensor.data for cbe in a lot of space.
+            ggml_tmac_transform_tensor(src0);
+
+            struct tmac_tensor_extra * wt = src0->extra;
+            tmac_float_type * lut_biases = (tmac_float_type *) (lut_scales + wt->lut_scales_size * ne11);
+            tmac_float_type * tmac_f_ptr = (tmac_float_type *) (lut_biases + wt->lut_scales_size * ne11);
+
+            GGML_ASSERT(src1->type == GGML_TYPE_F32);
+            tmac_float_type * act_input;
+            if (sizeof(tmac_float_type) == 2) {
+                ggml_fp32_to_fp16_row(src1->data, tmac_f_ptr, ne10 * ne11);
+                act_input = tmac_f_ptr;
+            } else {
+                act_input = src1->data;
+            }
+            for (int ine11 = 0; ine11 < ne11; ine11++) {
+                ggml_tmac_mul_mat_task_init(act_input + ne10 * ine11,
+                                            qlut + ne10 * ine11 * 4,
+                                            lut_scales + wt->lut_scales_size * ine11,
+                                            lut_biases + wt->lut_scales_size * ine11,
+                                            ne01, ne00, 1, bits);
+            }
+
+            return;
+        }
+
+        struct tmac_tensor_extra * wt = src0->extra;
+        tmac_float_type * lut_biases = (tmac_float_type *) (lut_scales + wt->lut_scales_size * ne11);
+        tmac_float_type * tmac_f_ptr = (tmac_float_type *) (lut_biases + wt->lut_scales_size * ne11);
+
+        tmac_float_type * act_output;
+        if (sizeof(tmac_float_type) == 2) {
+            act_output = tmac_f_ptr;
+        } else {
+            act_output = dst->data;
+        }
+#if defined(TMAC_USE_TVM_THREADPOOL)
+        if (ith != 0) {
+            return;
+        }
+        // TODO: schedule ne11(m) in T-MAC
+        for (int ine11 = 0; ine11 < ne11; ine11++) {
+            const int qlut_offset       = ne10 * ine11 * 4;
+            const int lut_scales_offset = wt->lut_scales_size * ine11;
+            const int dst_offset        = ne0 * ine11;
+
+            ggml_tmac_mul_mat_task_compute(wt->qweights,
+                                           wt->scales,
+                                           qlut + qlut_offset,
+                                           lut_scales + lut_scales_offset,
+                                           lut_biases + lut_scales_offset,
+                                           act_output + dst_offset,
+                                           ne01, ne00, 1, bits);
+        }
+        if (sizeof(tmac_float_type) == 2) {
+            ggml_fp16_to_fp32_row(tmac_f_ptr, dst->data, ne00 * ne01);
+        }
+#else
+        const int n_tile_num = wt->n_tile_num;
+        GGML_ASSERT(ne0 % n_tile_num == 0);
+        const int w_size           = ne00 * ne01 * bits / 8;
+        const int w_tile_size      = w_size / n_tile_num;
+
+        const int th_tile_num = (n_tile_num + nth - 1) / nth;
+        const int th_tile_beg = ith * th_tile_num;
+        const int th_tile_end = MIN((ith + 1) * th_tile_num, n_tile_num);
+
+        // To prevent spin-lock waiting for TVM threads,
+        // we schedule threads in llama.cpp and only compile kernels for one tile in TVM
+        // TVM currently does not support strided input placeholder
+        // Workaround: use T-MAC GeMV and loop over m axis in llama.cpp
+        for (int i_tile = th_tile_beg; i_tile < th_tile_end; i_tile++) {
+            const int w_offset          = i_tile * w_tile_size;
+            const int scales_offset     = wt->scales_size * i_tile / n_tile_num;
+            for (int ine11 = 0; ine11 < ne11; ine11++) {
+                const int qlut_offset       = ne10 * ine11 * 4;
+                const int lut_scales_offset = wt->lut_scales_size / ne11 * ine11;
+                const int dst_offset        = ne0 * ine11 + ne0 / n_tile_num * i_tile;
+
+                ggml_tmac_mul_mat_task_compute(wt->qweights + w_offset,
+                                               wt->scales + scales_offset,
+                                               qlut + qlut_offset,
+                                               lut_scales + lut_scales_offset,
+                                               lut_biases + lut_scales_offset,
+                                               act_output + dst_offset,
+                                               ne01 / n_tile_num, ne00, 1, bits);
+                if (sizeof(tmac_float_type) == 2) {
+                    ggml_fp16_to_fp32_row(tmac_f_ptr + dst_offset, (float *) dst->data + dst_offset, ne01 / n_tile_num);
+                }
+            }
+        }
+#endif
+
+        return;
+    }
+#endif
+
     if (params->type == GGML_TASK_TYPE_INIT) {
         // printf("ne03:%ld\n", ne03);
         // printf("ne02:%ld\n", ne02);
@@ -19290,6 +19415,11 @@ struct ggml_cplan ggml_graph_plan(const struct ggml_cgraph * cgraph, int n_threa
 //                         }
 //                     } else
 // #endif
+#if defined(GGML_USE_TMAC)
+                    if (ggml_tmac_can_mul_mat(node->src[0], node->src[1], node)) {
+                        cur = ggml_tmac_mul_mat_get_wsize(node->src[0], node->src[1], node);
+                    } else
+#endif
                     if (node->src[1]->type != vec_dot_type) {
                         cur = ggml_row_size(vec_dot_type, ggml_nelements(node->src[1]));
                     }

@@ -25,6 +25,9 @@
 #ifdef GGML_USE_MPI
 #  include "ggml-mpi.h"
 #endif
+#ifdef GGML_USE_TMAC
+#  include "ggml-tmac.h"
+#endif
 #ifndef QK_K
 #  ifdef GGML_QKK_64
 #    define QK_K 64
@@ -3597,7 +3600,9 @@ struct llama_model_loader {
             }
 
             size_t n_size = ggml_nbytes(cur);
-
+#if defined(GGML_USE_TMAC)
+            ggml_tmac_transform_tensor(cur);
+#endif
             if (use_mmap) {
                 const auto & mapping = mappings.at(weight->idx);
                 ggml_backend_buffer_t buf_mmap = nullptr;
@@ -11564,6 +11569,13 @@ static void llama_graph_compute(
     if (ggml_backend_is_metal(lctx.backend_metal)) {
         ggml_backend_metal_set_n_cb(lctx.backend_metal, n_threads);
     }
+#endif
+
+#ifdef GGML_USE_TMAC
+    #ifdef TMAC_USE_TVM_THREADPOOL
+        ggml_tmac_set_n_threads(n_threads);
+        n_threads = 1;
+    #endif
 #endif
 
     if (lctx.backend_cpu != nullptr) {
