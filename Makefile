@@ -8,6 +8,7 @@ BUILD_TARGETS = \
 TEST_TARGETS = \
 	tests/test-autorelease \
 	tests/test-backend-ops \
+	tests/test-tmac-ops \
 	tests/test-double-float \
 	tests/test-grad0 \
 	tests/test-grammar-integration \
@@ -1019,6 +1020,10 @@ tests/test-c.o: tests/test-c.c llama.h
 	$(CC) $(CFLAGS) -c $(filter-out %.h,$^) -o $@
 
 tests/test-backend-ops: tests/test-backend-ops.cpp ggml.o $(OBJS)
+	$(CXX) $(CXXFLAGS) -c $< -o $(call GET_OBJ_FILE, $<)
+	$(CXX) $(CXXFLAGS) $(filter-out %.h $<,$^) $(call GET_OBJ_FILE, $<) -o $@ $(LDFLAGS)
+
+tests/test-tmac-ops: tests/test-tmac-ops.cpp ggml.o $(OBJS)
 	$(CXX) $(CXXFLAGS) -c $< -o $(call GET_OBJ_FILE, $<)
 	$(CXX) $(CXXFLAGS) $(filter-out %.h $<,$^) $(call GET_OBJ_FILE, $<) -o $@ $(LDFLAGS)
 

@@ -11374,7 +11374,7 @@ static void ggml_compute_forward_mul_mat(
 
 #if defined(GGML_USE_TMAC)
     if (ggml_tmac_can_mul_mat(src0, src1, dst)) {
-        if (params->type == GGML_TASK_FINALIZE) {
+        if (params->type == GGML_TASK_TYPE_FINALIZE) {
             return;
         }
 
@@ -11386,7 +11386,7 @@ static void ggml_compute_forward_mul_mat(
         // g = 4
         int8_t * qlut = wdata;
         tmac_float_type * lut_scales = (tmac_float_type *) (qlut + ne10 * ne11 * 4);
-        if (params->type == GGML_TASK_INIT) {
+        if (params->type == GGML_TASK_TYPE_INIT) {
             if (ith != 0) {
                 return;
             }
