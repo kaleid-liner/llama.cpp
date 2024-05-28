@@ -137,14 +137,18 @@ size_t ggml_tmac_mul_mat_get_wsize(const struct ggml_tensor * src0, const struct
 // n = output_dim
 void ggml_tmac_mul_mat_task_init(void * src1, void * qlut, void * lut_scales, void * lut_biases, int n, int k, int m, int bits) {
     // t-mac llama.cpp n and m swapped
+    // LOG(INFO) << "begin init";
     wrapper->llama_cpp_init(src1, qlut, lut_scales, lut_biases, n, k, m, bits);
 }
 
 void ggml_tmac_mul_mat_task_compute(void * src0, void * scales, void * qlut, void * lut_scales, void * lut_biases, void * dst, int n, int k, int m, int bits) {
+    // LOG(INFO) << "begin compute";
     wrapper->llama_cpp_compute(src0, scales, qlut, lut_scales, lut_biases, dst, n, k, m, bits);
+    // LOG(INFO) << "finish compute";
 }
 
 void ggml_tmac_transform_tensor(struct ggml_tensor * tensor) {
+    // LOG(INFO) << "begin transform";
     if (!(is_type_supported(tensor->type) && tensor->backend == GGML_BACKEND_TYPE_CPU && tensor->extra == nullptr)) {
         return;
     }
@@ -172,7 +176,6 @@ void ggml_tmac_transform_tensor(struct ggml_tensor * tensor) {
         LOG(INFO) << "Failed to find kcfg. Abort transforming";
         return;
     }
-
     const int mgroup = ngroups_per_elem * simd_n_in;
     m = m * bits;
 
@@ -186,9 +189,8 @@ void ggml_tmac_transform_tensor(struct ggml_tensor * tensor) {
         /* .qweights        = */ qweights,
         /* .scales          = */ scales
     };
-    printf("check1\n");
 // for fast testing
-// #define TMAC_EMPTY_WEIGHTS
+#define TMAC_EMPTY_WEIGHTS
 #ifndef TMAC_EMPTY_WEIGHTS
     // TODO: optimize to accelerate weights loading
     uint8_t * buf1 = new uint8_t[m * k];
@@ -211,7 +213,6 @@ void ggml_tmac_transform_tensor(struct ggml_tensor * tensor) {
             }
         }
     }
-    printf("check2\n");
     // # (M // bits, K, bits) -> (M // bits, bits, K) -> (M // bits, bits, K // g, g) -> (M // bits, bits, K // g)
     // w = w.transpose(0, 2, 1).reshape(M // bits, bits, K // g, g)
     // w = sum([(w[:, :, :, ig] << ig) for ig in range(g)])
@@ -227,7 +228,6 @@ void ggml_tmac_transform_tensor(struct ggml_tensor * tensor) {
             }
         }
     }
-    printf("check3\n");
     // # 0, 16, 1, 17, 2, 18, 3, 19, 4, 20, 5, 21, 6, 22, 7, 23, 8, 24, 9, 25, 10, 26, 11, 27, 12, 28, 13, 29, 14, 30, 15, 31
     // # for bits=3
     // # bit0: [0, 8), bit1: [8, 16), bit2: [16, 24), bit0: [24, 32)
@@ -282,7 +282,6 @@ void ggml_tmac_transform_tensor(struct ggml_tensor * tensor) {
             }
         }
     }
-    printf("check4\n");
     int m_group_size, k_group_size;
     if (scales_size < m / bits) {  // BitNet-like scale (m_groups,)
         m_group_size = m / bits / scales_size;
@@ -292,7 +291,6 @@ void ggml_tmac_transform_tensor(struct ggml_tensor * tensor) {
         m_group_size = 1;
         k_group_size = group_size;
     }
-    printf("check5\n");
     // scales = scales.reshape(M // bm, bm // bits, K // group_size).transpose(0, 2, 1)
     for (int im = 0; im < m / bits; im += m_group_size) {
         for (int ik = 0; ik < k; ik += k_group_size) {
@@ -318,7 +316,7 @@ void ggml_tmac_transform_tensor(struct ggml_tensor * tensor) {
             scales[new_idx] = scale;
         }
     }
-    printf("check6\n");
+
     delete[] buf1;
     delete[] buf2;
 #else
