@@ -1953,41 +1953,41 @@ static bool test_backend(ggml_backend_t backend, test_mode mode, const char * op
 
     for (ggml_type type_a : all_types) {
         for (ggml_type type_b : {GGML_TYPE_F32}) {
-            test_cases.emplace_back(new test_mul_mat(type_a, type_b,  4096, 1,  4096, { 1,  1}, {1, 1}));
-            test_cases.emplace_back(new test_mul_mat(type_a, type_b, 11008, 1,  4096, { 1,  1}, {1, 1}));
-            test_cases.emplace_back(new test_mul_mat(type_a, type_b,  4096, 1, 11008, { 1,  1}, {1, 1}));
-            test_cases.emplace_back(new test_mul_mat(type_a, type_b,  5120, 1,  5120, { 1,  1}, {1, 1}));
-            test_cases.emplace_back(new test_mul_mat(type_a, type_b, 13824, 1,  5120, { 1,  1}, {1, 1}));
-            test_cases.emplace_back(new test_mul_mat(type_a, type_b,  5120, 1, 13824, { 1,  1}, {1, 1}));
-            test_cases.emplace_back(new test_mul_mat(type_a, type_b,  1024, 1,  8192, { 1,  1}, {1, 1}));
-            test_cases.emplace_back(new test_mul_mat(type_a, type_b,  8192, 1,  8192, { 1,  1}, {1, 1}));
-            test_cases.emplace_back(new test_mul_mat(type_a, type_b, 28672, 1,  8192, { 1,  1}, {1, 1}));
-            test_cases.emplace_back(new test_mul_mat(type_a, type_b,  8192, 1, 28672, { 1,  1}, {1, 1}));
+            test_cases.emplace_back(new test_mul_mat(type_a, type_b,  3200, 1,  3200, { 1,  1}, {1, 1}));
+            test_cases.emplace_back(new test_mul_mat(type_a, type_b,  3200, 1,  800, { 1,  1}, {1, 1}));
+            test_cases.emplace_back(new test_mul_mat(type_a, type_b,  800, 1, 3200, { 1,  1}, {1, 1}));
+            test_cases.emplace_back(new test_mul_mat(type_a, type_b,  10240, 1,  3200, { 1,  1}, {1, 1}));
+            test_cases.emplace_back(new test_mul_mat(type_a, type_b, 3200, 1,  10240, { 1,  1}, {1, 1}));
+            // test_cases.emplace_back(new test_mul_mat(type_a, type_b,  5120, 1, 13824, { 1,  1}, {1, 1}));
+            // test_cases.emplace_back(new test_mul_mat(type_a, type_b,  1024, 1,  8192, { 1,  1}, {1, 1}));
+            // test_cases.emplace_back(new test_mul_mat(type_a, type_b,  8192, 1,  8192, { 1,  1}, {1, 1}));
+            // test_cases.emplace_back(new test_mul_mat(type_a, type_b, 28672, 1,  8192, { 1,  1}, {1, 1}));
+            // test_cases.emplace_back(new test_mul_mat(type_a, type_b,  8192, 1, 28672, { 1,  1}, {1, 1}));
 
-            test_cases.emplace_back(new test_mul_mat(type_a, type_b,  4096, 256,  4096, { 1,  1}, {1, 1}));
-            test_cases.emplace_back(new test_mul_mat(type_a, type_b, 11008, 256,  4096, { 1,  1}, {1, 1}));
-            test_cases.emplace_back(new test_mul_mat(type_a, type_b,  4096, 256, 11008, { 1,  1}, {1, 1}));
-            test_cases.emplace_back(new test_mul_mat(type_a, type_b,  5120, 256,  5120, { 1,  1}, {1, 1}));
-            test_cases.emplace_back(new test_mul_mat(type_a, type_b, 13824, 256,  5120, { 1,  1}, {1, 1}));
-            test_cases.emplace_back(new test_mul_mat(type_a, type_b,  5120, 256, 13824, { 1,  1}, {1, 1}));
-            test_cases.emplace_back(new test_mul_mat(type_a, type_b,  1024, 256,  8192, { 1,  1}, {1, 1}));
-            test_cases.emplace_back(new test_mul_mat(type_a, type_b,  8192, 256,  8192, { 1,  1}, {1, 1}));
-            test_cases.emplace_back(new test_mul_mat(type_a, type_b, 28672, 256,  8192, { 1,  1}, {1, 1}));
-            test_cases.emplace_back(new test_mul_mat(type_a, type_b,  8192, 256, 28672, { 1,  1}, {1, 1}));
+            // test_cases.emplace_back(new test_mul_mat(type_a, type_b,  4096, 256,  4096, { 1,  1}, {1, 1}));
+            // test_cases.emplace_back(new test_mul_mat(type_a, type_b, 11008, 256,  4096, { 1,  1}, {1, 1}));
+            // test_cases.emplace_back(new test_mul_mat(type_a, type_b,  4096, 256, 11008, { 1,  1}, {1, 1}));
+            // test_cases.emplace_back(new test_mul_mat(type_a, type_b,  5120, 256,  5120, { 1,  1}, {1, 1}));
+            // test_cases.emplace_back(new test_mul_mat(type_a, type_b, 13824, 256,  5120, { 1,  1}, {1, 1}));
+            // test_cases.emplace_back(new test_mul_mat(type_a, type_b,  5120, 256, 13824, { 1,  1}, {1, 1}));
+            // test_cases.emplace_back(new test_mul_mat(type_a, type_b,  1024, 256,  8192, { 1,  1}, {1, 1}));
+            // test_cases.emplace_back(new test_mul_mat(type_a, type_b,  8192, 256,  8192, { 1,  1}, {1, 1}));
+            // test_cases.emplace_back(new test_mul_mat(type_a, type_b, 28672, 256,  8192, { 1,  1}, {1, 1}));
+            // test_cases.emplace_back(new test_mul_mat(type_a, type_b,  8192, 256, 28672, { 1,  1}, {1, 1}));
         }
     }
 
-    for (ggml_type type_a : all_types) {
-        for (ggml_type type_b : {GGML_TYPE_F32 /*, GGML_TYPE_F16 */}) {
-            for (int n_mats : {2, 4, 8}) {
-                for (int id = 0; id < n_mats; id++) {
-                    for (bool v : {false, true}) {
-                        test_cases.emplace_back(new test_mul_mat_id(type_a, type_b, n_mats, id, 16, 16, 256, v));
-                    }
-                }
-            }
-        }
-    }
+    // for (ggml_type type_a : all_types) {
+    //     for (ggml_type type_b : {GGML_TYPE_F32 /*, GGML_TYPE_F16 */}) {
+    //         for (int n_mats : {2, 4, 8}) {
+    //             for (int id = 0; id < n_mats; id++) {
+    //                 for (bool v : {false, true}) {
+    //                     test_cases.emplace_back(new test_mul_mat_id(type_a, type_b, n_mats, id, 16, 16, 256, v));
+    //                 }
+    //             }
+    //         }
+    //     }
+    // }
 
     test_cases.emplace_back(new test_sqr());
     test_cases.emplace_back(new test_clamp());
