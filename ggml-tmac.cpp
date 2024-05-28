@@ -188,7 +188,7 @@ void ggml_tmac_transform_tensor(struct ggml_tensor * tensor) {
     };
 
 // for fast testing
-// #define TMAC_EMPTY_WEIGHTS
+#define TMAC_EMPTY_WEIGHTS
 #ifndef TMAC_EMPTY_WEIGHTS
     // TODO: optimize to accelerate weights loading
     uint8_t * buf1 = new uint8_t[m * k];

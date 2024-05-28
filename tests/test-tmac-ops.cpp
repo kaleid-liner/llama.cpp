@@ -1839,9 +1839,9 @@ static bool test_backend(ggml_backend_t backend, test_mode mode, const char * op
     //     GGML_TYPE_IQ4_NL, GGML_TYPE_IQ3_S,
     // };
     const ggml_type all_types[] = {
-        // GGML_TYPE_Q2_K,
+        GGML_TYPE_Q2_K,
         // GGML_TYPE_Q3_K,
-        GGML_TYPE_Q4_0,
+        // GGML_TYPE_Q4_0,
     };
 
     // unary ops
