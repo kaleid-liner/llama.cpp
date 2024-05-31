@@ -515,6 +515,9 @@ static const ggml_type_traits_t type_traits[GGML_TYPE_COUNT] = {
         .blck_size                = 1,
         .type_size                = sizeof(int8_t),
         .is_quantized             = false,
+        .vec_dot                  = (ggml_vec_dot_t) ggml_vec_dot_f32,
+        .vec_dot_type             = GGML_TYPE_F32,
+        .nrows                    = 1,
     },
     [GGML_TYPE_I8] = {
         .type_name                = "i8",
@@ -2599,7 +2602,7 @@ GGML_CALL size_t ggml_nbytes(const struct ggml_tensor * tensor) {
         }
 
         if(tensor->type == 30){
-            nbytes = nbytes / 4;
+            nbytes = nbytes / 4 + 32;
         }
         // printf("get type nbyte2:%d\n", nbytes);
     }
@@ -11209,9 +11212,11 @@ static void ggml_compute_forward_mul_mat(
     const struct ggml_tensor * src0 = dst->src[0];
     const struct ggml_tensor * src1 = dst->src[1];
 
-    // printf("enter normal matmul\n");
-    // printf("%s\n", src0->name);
-    // printf("%s\n", src1->name);
+    printf("enter normal matmul\n");
+    printf("%s\n", src0->name);
+    printf("%d\n", src0->type);
+    printf("%s\n", src1->name);
+    printf("%d\n", src1->type);
 
     int64_t t0 = ggml_perf_time_us();
     UNUSED(t0);
@@ -11248,7 +11253,7 @@ static void ggml_compute_forward_mul_mat(
     enum ggml_type    const vec_dot_type          = type_traits[type].vec_dot_type;
     ggml_from_float_t const from_float_to_vec_dot = type_traits[vec_dot_type].from_float;
     int64_t           const vec_dot_num_rows      = type_traits[type].nrows;
-
+    printf("through here\n");
     GGML_ASSERT(ne0 == ne01);
     GGML_ASSERT(ne1 == ne11);
     GGML_ASSERT(ne2 == ne12);
@@ -11373,7 +11378,9 @@ static void ggml_compute_forward_mul_mat(
 // #endif
 
 #if defined(GGML_USE_TMAC)
+    printf("begin tmac\n");
     if (ggml_tmac_can_mul_mat(src0, src1, dst)) {
+        printf("get in tmac\n");
         if (params->type == GGML_TASK_TYPE_FINALIZE) {
             return;
         }

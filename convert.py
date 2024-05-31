@@ -732,6 +732,7 @@ def transform_to_i2(x : NDArray):
             break
     x = np.divide(x, scale)
     x = x.astype(np.uint8)
+    # x = (x.astype(np.int8) + 2).astype(np.uint8)
     x = np.reshape(x, [x.shape[0] // 4, 4])
     keep_bit = {0:192, 1:48, 2:12, 3:3}
     ans = np.zeros([x_num // 4], dtype=np.uint8)
@@ -1216,12 +1217,16 @@ class OutputFile:
         data_type = getattr(tensor.data_type, 'quantized_type', None) or tensor.data_type.dtype
         data_nbytes = tensor.data_type.elements_to_bytes(n_elements)
         if tensor.data_type.name == "I2":
-            data_nbytes = data_nbytes // 4
-            scale_name = name.replace('.weight', '_scale.weight')
-            scale_shape = [1]
-            scale_data_type = np.float32
-            scale_nbytes = 4
-            self.gguf.add_tensor_info(scale_name, scale_shape, scale_data_type, scale_nbytes, raw_dtype=None)
+            # i2 * n + scale (fp32)
+            # print(tensor.shape)
+            # print(data_nbytes)
+            data_nbytes = data_nbytes // 4 + 32
+            # print(data_nbytes)
+            # scale_name = name.replace('.weight', '_scale.weight')
+            # scale_shape = [1]
+            # scale_data_type = np.float32
+            # scale_nbytes = 4
+            # self.gguf.add_tensor_info(scale_name, scale_shape, scale_data_type, scale_nbytes, raw_dtype=None)
         self.gguf.add_tensor_info(name, tensor.shape, data_type, data_nbytes, raw_dtype=raw_dtype)
 
     def write_meta(self) -> None:
@@ -1248,28 +1253,22 @@ class OutputFile:
         start = time.time()
         for i, ((name, lazy_tensor), ndarray) in enumerate(zip(model.items(), ndarrays)):
             ndarray, i2_scale = ndarray
-            if i2_scale is not None:
-                elapsed = time.time() - start
-                size = ' x '.join(f"{dim:6d}" for dim in [1])
-                padi = len(str(len(model)))
-                i2_name = name.replace('.weight', '_scale.weight')
-                type_name = 'F32'
-                logger.info(
-                    f"[{i + 1:{padi}d}/{len(model)}] Writing tensor {i2_name:38s} | size {size:16} | type {type_name:4} | T+{int(elapsed):4}"
-                )
-                print(i2_name)
-                print(i2_scale)
-                self.gguf.write_tensor_data(i2_scale)
             elapsed = time.time() - start
             size = ' x '.join(f"{dim:6d}" for dim in lazy_tensor.shape)
             padi = len(str(len(model)))
-            # print(name)
-            # print(ndarray.dtype)
+            print(name)
+            print(ndarray.dtype)
             # asfasf
             logger.info(
                 f"[{i + 1:{padi}d}/{len(model)}] Writing tensor {name:38s} | size {size:16} | type {lazy_tensor.data_type.name:4} | T+{int(elapsed):4}"
             )
+            print(ndarray)
             self.gguf.write_tensor_data(ndarray)
+            if i2_scale is not None:
+                i2_scale = np.tile(np.array(1).astype(np.uint8), 32)
+                print(i2_scale.dtype)
+                print(i2_scale)
+                self.gguf.write_tensor_data(i2_scale)
 
     def close(self) -> None:
         self.gguf.close()
