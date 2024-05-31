@@ -670,6 +670,9 @@ static const ggml_type_traits_t type_traits[GGML_TYPE_COUNT] = {
         .blck_size                = 1,
         .type_size                = sizeof(int8_t),
         .is_quantized             = false,
+        .vec_dot                  = (ggml_vec_dot_t) ggml_vec_dot_f32,
+        .vec_dot_type             = GGML_TYPE_F32,
+        .nrows                    = 1,
     },
     [GGML_TYPE_I8] = {
         .type_name                = "i8",
@@ -3336,7 +3339,7 @@ GGML_CALL size_t ggml_nbytes(const struct ggml_tensor * tensor) {
         }
 
         if(tensor->type == GGML_TYPE_I2){
-            nbytes = nbytes / 4;
+            nbytes = nbytes / 4 + 32;
         }
     }
     else {
