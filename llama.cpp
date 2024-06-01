@@ -5461,23 +5461,16 @@ static bool llm_load_tensors(
                         layer.attn_sub_norm = ml.create_tensor(ctx_layer, tn(LLM_TENSOR_ATTN_SUB_NORM, "weight", i), {n_embd});
 
                         layer.wq = ml.create_tensor(ctx_split, tn(LLM_TENSOR_ATTN_Q, "weight", i), {n_embd, n_embd});
-                        // layer.wq_scale = ml.create_tensor(ctx_split, tn(LLM_TENSOR_ATTN_Q_SCALE, "weight", i), {1});
                         layer.wk = ml.create_tensor(ctx_split, tn(LLM_TENSOR_ATTN_K, "weight", i), {n_embd, n_embd_gqa});
-                        // layer.wk_scale = ml.create_tensor(ctx_split, tn(LLM_TENSOR_ATTN_K_SCALE, "weight", i), {1});
                         layer.wv = ml.create_tensor(ctx_split, tn(LLM_TENSOR_ATTN_V, "weight", i), {n_embd, n_embd_gqa});
-                        // layer.wv_scale = ml.create_tensor(ctx_split, tn(LLM_TENSOR_ATTN_V_SCALE, "weight", i), {1});
                         layer.wo = ml.create_tensor(ctx_split, tn(LLM_TENSOR_ATTN_OUT, "weight", i), {n_embd, n_embd});
-                        // layer.wo_scale = ml.create_tensor(ctx_split, tn(LLM_TENSOR_ATTN_O_SCALE, "weight", i), {1});
 
                         layer.ffn_norm = ml.create_tensor(ctx_layer, tn(LLM_TENSOR_FFN_NORM, "weight", i), {n_embd});
                         layer.ffn_sub_norm = ml.create_tensor(ctx_layer, tn(LLM_TENSOR_FFN_SUB_NORM, "weight", i), {n_ff});
 
                         layer.ffn_gate = ml.create_tensor(ctx_split, tn(LLM_TENSOR_FFN_GATE, "weight", i), {n_embd, n_ff});
-                        // layer.ffn_gate_scale = ml.create_tensor(ctx_split, tn(LLM_TENSOR_FFN_GATE_SCALE, "weight", i), {1});
                         layer.ffn_down = ml.create_tensor(ctx_split, tn(LLM_TENSOR_FFN_DOWN, "weight", i), {n_ff, n_embd});
-                        // layer.ffn_down_scale = ml.create_tensor(ctx_split, tn(LLM_TENSOR_FFN_DOWN_SCALE, "weight", i), {1});
                         layer.ffn_up   = ml.create_tensor(ctx_split, tn(LLM_TENSOR_FFN_UP,   "weight", i), {n_embd, n_ff});
-                        // layer.ffn_up_scale = ml.create_tensor(ctx_split, tn(LLM_TENSOR_FFN_UP_SCALE, "weight", i), {1});
                     }
                 } break;
             case LLM_ARCH_QWEN:
@@ -6412,13 +6405,9 @@ static struct ggml_tensor * llm_build_norm(
 // for bitnet
 static struct ggml_tensor * quant_bitlinear(
         struct ggml_context * ctx,
-        struct ggml_tensor  * cur,
-        bool isbitnet = true)
+        struct ggml_tensor  * cur)
     {
-        if (isbitnet)
-        {
-            return ggml_bitlinear_quant(ctx, cur);
-        }
+        return ggml_bitlinear_quant(ctx, cur);
 
         return cur;
     }
@@ -6449,10 +6438,10 @@ static struct ggml_tensor * llm_build_ffn(
     if (isbitnet) {
         cur = quant_bitlinear(ctx, cur);
     }
-    if (isbitnet && !istmac) {
-        tmp = ggml_bitnet_mul_mat(ctx, up, cur, up_scale);
-    } else {
         tmp = ggml_mul_mat(ctx, up, cur);
+        tmp = ggml_mul_mat(ctx, up, cur);
+    }
+    tmp = ggml_mul_mat(ctx, up, cur);
     }
     cb(tmp, "ffn_up", il);
 
@@ -6470,10 +6459,10 @@ static struct ggml_tensor * llm_build_ffn(
                 } break;
             case LLM_FFN_PAR:
                 {
-                    if (isbitnet && !istmac) {
-                        cur = ggml_bitnet_mul_mat(ctx, gate, cur, gate_scale);
-                    } else {
                         cur = ggml_mul_mat(ctx, gate, cur);
+                        cur = ggml_mul_mat(ctx, gate, cur);
+                    }
+                    cur = ggml_mul_mat(ctx, gate, cur);
                     }
                     cb(cur, "ffn_gate", il);
                 } break;
@@ -6535,10 +6524,10 @@ static struct ggml_tensor * llm_build_ffn(
     if (isbitnet) {
         cur = quant_bitlinear(ctx, cur);
     }
-    if (isbitnet && !istmac) {
-        cur = ggml_bitnet_mul_mat(ctx, down, cur, down_scale);
-    } else {
         cur = ggml_mul_mat(ctx, down, cur);
+        cur = ggml_mul_mat(ctx, down, cur);
+    }
+    cur = ggml_mul_mat(ctx, down, cur);
     }
     
     if (down_b) {
@@ -6665,8 +6654,7 @@ static struct ggml_tensor * llm_build_kqv(
                     int       il,
          struct ggml_tensor * attn_sub_norm = nullptr,
          struct ggml_tensor * wo_scale = nullptr,
-                    bool      isbitnet = false,
-                    bool      istmac = true
+                    bool      isbitnet = false
                     ) {
     const int64_t n_ctx         = cparams.n_ctx;
     const int64_t n_head        = hparams.n_head;
@@ -6795,10 +6783,10 @@ static struct ggml_tensor * llm_build_kqv(
         ggml_build_forward_expand(graph, cur);
     }
 
-    if (isbitnet && !istmac){
-        cur = ggml_bitnet_mul_mat(ctx, wo, cur, wo_scale);
-    } else {
         cur = ggml_mul_mat(ctx, wo, cur);
+        cur = ggml_mul_mat(ctx, wo, cur);
+    }
+    cur = ggml_mul_mat(ctx, wo, cur);
     }
     
     if (wo_b) {
@@ -8922,7 +8910,6 @@ struct llm_build_context {
     struct ggml_cgraph * build_bitnet() {
         struct ggml_cgraph * gf = ggml_new_graph_custom(ctx0, LLAMA_MAX_NODES, false);
         bool isbitnet = true;
-        bool istmac   = true;
         const int64_t n_embd_head = hparams.n_embd_head_v;
         GGML_ASSERT(n_embd_head == hparams.n_embd_head_k);
 
@@ -8948,13 +8935,10 @@ struct llm_build_context {
             {
                 // compute Q and K and RoPE them
                 // B1.Q
-                cur = quant_bitlinear(ctx0, cur, isbitnet);
+                cur = quant_bitlinear(ctx0, cur);
                 struct ggml_tensor * Qcur;
-                if (istmac) {
-                    Qcur = ggml_mul_mat(ctx0, model.layers[il].wq, cur);
-                } else {
-                    Qcur = ggml_bitnet_mul_mat(ctx0, model.layers[il].wq, cur, model.layers[il].wq_scale);
-                }
+                Qcur = ggml_mul_mat(ctx0, model.layers[il].wq, cur);
+
                 cb(Qcur, "Qcur", il);
                 if (model.layers[il].bq) {
                     Qcur = ggml_add(ctx0, Qcur, model.layers[il].bq);
@@ -8963,11 +8947,8 @@ struct llm_build_context {
 
                 // B1.K
                 struct ggml_tensor * Kcur;
-                if (istmac) {
-                    Kcur = ggml_mul_mat(ctx0, model.layers[il].wk, cur);
-                } else {
-                    Kcur = ggml_bitnet_mul_mat(ctx0, model.layers[il].wk, cur, model.layers[il].wk_scale);
-                }
+                Kcur = ggml_mul_mat(ctx0, model.layers[il].wk, cur);
+
                 cb(Kcur, "Kcur", il);
                 if (model.layers[il].bk) {
                     Kcur = ggml_add(ctx0, Kcur, model.layers[il].bk);
@@ -8976,11 +8957,8 @@ struct llm_build_context {
 
                 // B1.V
                 struct ggml_tensor * Vcur;
-                if (istmac) {
-                    Vcur = ggml_mul_mat(ctx0, model.layers[il].wv, cur);
-                } else {
-                    Vcur = ggml_bitnet_mul_mat(ctx0, model.layers[il].wv, cur, model.layers[il].wv_scale);
-                }
+                Vcur = ggml_mul_mat(ctx0, model.layers[il].wv, cur);
+
                 cb(Vcur, "Vcur", il);
                 if (model.layers[il].bv) {
                     Vcur = ggml_add(ctx0, Vcur, model.layers[il].bv);
@@ -9005,7 +8983,7 @@ struct llm_build_context {
                 cur = llm_build_kqv(ctx0, model, hparams, cparams, kv_self, gf,
                         model.layers[il].wo, model.layers[il].bo, 
                         Qcur, KQ_mask, nullptr, n_tokens, n_kv, 1.0f/sqrtf(float(n_embd_head)), cb, il,
-                        model.layers[il].attn_sub_norm, model.layers[il].wo_scale, isbitnet, istmac);
+                        model.layers[il].attn_sub_norm, model.layers[il].wo_scale, isbitnet);
                 cb(cur, "kqv_out", 0);
             }
 
@@ -9033,7 +9011,7 @@ struct llm_build_context {
                         NULL,
                         LLM_FFN_SILU, LLM_FFN_PAR, cb, il, hparams, model.layers[il].ffn_sub_norm,
                         model.layers[il].ffn_up_scale, model.layers[il].ffn_gate_scale, model.layers[il].ffn_down_scale,
-                        isbitnet, istmac);
+                        isbitnet);
                 cb(cur, "ffn_out", il);
             }
 
@@ -14582,7 +14560,10 @@ static ggml_type llama_tensor_get_type(quantize_state_internal & qs, ggml_type n
             new_type = qs.params->output_tensor_type;
         } else {
             int nx = tensor->ne[0];
-            if (arch == LLM_ARCH_FALCON || nx % QK_K != 0) {
+            if (arch == LLM_ARCH_BITNET) {
+                new_type = GGML_TYPE_Q4_1;
+            }
+            else if (arch == LLM_ARCH_FALCON || nx % QK_K != 0) {
                 new_type = GGML_TYPE_Q8_0;
             }
             else if (ftype == LLAMA_FTYPE_MOSTLY_IQ2_XXS || ftype == LLAMA_FTYPE_MOSTLY_IQ2_XS || ftype == LLAMA_FTYPE_MOSTLY_IQ3_XXS ||
@@ -14638,10 +14619,10 @@ static ggml_type llama_tensor_get_type(quantize_state_internal & qs, ggml_type n
             }
         }
     } else if (name.find("attn_v.weight") != std::string::npos) {
-        // if      (ftype == LLAMA_FTYPE_MOSTLY_Q2_K) {
-        //     new_type = qs.model.hparams.n_gqa() >= 4 ? GGML_TYPE_Q4_K : GGML_TYPE_Q3_K;
-        // }
-        if (ftype == LLAMA_FTYPE_MOSTLY_Q2_K_S && qs.model.hparams.n_gqa() >= 4) {
+        if      (ftype == LLAMA_FTYPE_MOSTLY_Q2_K) {
+            new_type = qs.model.hparams.n_gqa() >= 4 ? GGML_TYPE_Q4_K : GGML_TYPE_Q3_K;
+        }
+        else if (ftype == LLAMA_FTYPE_MOSTLY_Q2_K_S && qs.model.hparams.n_gqa() >= 4) {
             new_type = GGML_TYPE_Q4_K;
         }
         else if (ftype == LLAMA_FTYPE_MOSTLY_IQ3_XXS) {
@@ -14699,11 +14680,11 @@ static ggml_type llama_tensor_get_type(quantize_state_internal & qs, ggml_type n
     } else if (name.find("ffn_down") != std::string::npos) {
         auto info = layer_info(qs.i_ffn_down, qs.n_ffn_down, name.c_str());
         int i_layer = info.first, n_layer = info.second;
-        // if      (ftype == LLAMA_FTYPE_MOSTLY_Q2_K) new_type = GGML_TYPE_Q3_K;
-        // else if (ftype == LLAMA_FTYPE_MOSTLY_Q2_K_S) {
-        //     if (i_layer < n_layer/8) new_type = GGML_TYPE_Q4_K;
-        // }
-        if (ftype == LLAMA_FTYPE_MOSTLY_IQ3_XXS && !qs.has_imatrix) {
+        if      (ftype == LLAMA_FTYPE_MOSTLY_Q2_K) new_type = GGML_TYPE_Q3_K;
+        else if (ftype == LLAMA_FTYPE_MOSTLY_Q2_K_S) {
+            if (i_layer < n_layer/8) new_type = GGML_TYPE_Q4_K;
+        }
+        else if (ftype == LLAMA_FTYPE_MOSTLY_IQ3_XXS && !qs.has_imatrix) {
             new_type = i_layer < n_layer/8 ? GGML_TYPE_Q4_K : GGML_TYPE_Q3_K;
         }
         else if (ftype == LLAMA_FTYPE_MOSTLY_Q3_K_M) {
@@ -14804,12 +14785,12 @@ static ggml_type llama_tensor_get_type(quantize_state_internal & qs, ggml_type n
         new_type == GGML_TYPE_IQ1_M) {
         int nx = tensor->ne[0];
         int ny = tensor->ne[1];
-        // if (nx % QK_K != 0) {
-        //     LLAMA_LOG_WARN("\n\n%s : tensor cols %d x %d are not divisible by %d, required for %s", __func__, nx, ny, QK_K, ggml_type_name(new_type));
-        //     convert_incompatible_tensor = true;
-        // } else {
+        if (nx % QK_K != 0) {
+            LLAMA_LOG_WARN("\n\n%s : tensor cols %d x %d are not divisible by %d, required for %s", __func__, nx, ny, QK_K, ggml_type_name(new_type));
+            convert_incompatible_tensor = true;
+        } else {
             ++qs.n_k_quantized;
-        // }
+        }
     }
     if (convert_incompatible_tensor) {
         switch (new_type) {
@@ -15162,6 +15143,10 @@ static void llama_model_quantize_internal(const std::string & fname_inp, const s
             }
             if (params->output_tensor_type < GGML_TYPE_COUNT && strcmp(tensor->name, "output.weight") == 0) {
                 new_type = params->output_tensor_type;
+            }
+            if (tensor->type == 30) {
+                // no need quantize for i2
+                new_type = tensor->type;
             }
 
             // If we've decided to quantize to the same type the tensor is already
