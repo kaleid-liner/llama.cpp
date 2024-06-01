@@ -832,6 +832,7 @@ if (GGML_TMAC)
         set(GGML_SOURCES_TMAC ggml-tmac.cpp)
 
         link_directories(${TMAC_LIB_DIR})
+        file(COPY ${TMAC_LIB_DIR}/kcfg.ini DESTINATION ${CMAKE_CURRENT_BINARY_DIR})
         # TODO: link t_mac_object when GGML_TMAC_SYSLIB
 
         if (GGML_TMAC_TVM_THREADPOOL)
