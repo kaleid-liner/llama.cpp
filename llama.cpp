@@ -6438,11 +6438,7 @@ static struct ggml_tensor * llm_build_ffn(
     if (isbitnet) {
         cur = quant_bitlinear(ctx, cur);
     }
-        tmp = ggml_mul_mat(ctx, up, cur);
-        tmp = ggml_mul_mat(ctx, up, cur);
-    }
     tmp = ggml_mul_mat(ctx, up, cur);
-    }
     cb(tmp, "ffn_up", il);
 
     if (up_b) {
@@ -6459,11 +6455,7 @@ static struct ggml_tensor * llm_build_ffn(
                 } break;
             case LLM_FFN_PAR:
                 {
-                        cur = ggml_mul_mat(ctx, gate, cur);
-                        cur = ggml_mul_mat(ctx, gate, cur);
-                    }
                     cur = ggml_mul_mat(ctx, gate, cur);
-                    }
                     cb(cur, "ffn_gate", il);
                 } break;
         }
@@ -6524,11 +6516,7 @@ static struct ggml_tensor * llm_build_ffn(
     if (isbitnet) {
         cur = quant_bitlinear(ctx, cur);
     }
-        cur = ggml_mul_mat(ctx, down, cur);
-        cur = ggml_mul_mat(ctx, down, cur);
-    }
     cur = ggml_mul_mat(ctx, down, cur);
-    }
     
     if (down_b) {
         cb(cur, "ffn_down", il);
@@ -6783,11 +6771,7 @@ static struct ggml_tensor * llm_build_kqv(
         ggml_build_forward_expand(graph, cur);
     }
 
-        cur = ggml_mul_mat(ctx, wo, cur);
-        cur = ggml_mul_mat(ctx, wo, cur);
-    }
     cur = ggml_mul_mat(ctx, wo, cur);
-    }
     
     if (wo_b) {
         cb(cur, "kqv_wo", il);
