@@ -24,8 +24,9 @@ from abc import ABC, abstractmethod
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, ClassVar, IO, Iterable, Literal, Protocol, TypeVar, runtime_checkable
+from typing import TYPE_CHECKING, Any, Callable, ClassVar, IO, Iterable, Literal, Protocol, TypeVar, runtime_checkable, Tuple
 
+import configparser
 import numpy as np
 from sentencepiece import SentencePieceProcessor
 
@@ -721,27 +722,62 @@ def bf16_to_fp32(bf16_arr: np.ndarray[Any, np.dtype[np.uint16]]) -> NDArray:
     fp32_arr = bf16_arr.astype(np.uint32) << 16
     return fp32_arr.view(np.float32)
 
+def preprocess_weights(
+    w: np.ndarray,
+    bits = 2,
+    g    = 4,
+) -> Tuple[np.ndarray, np.ndarray]:
+    M, K = w.shape
+
+    cf=configparser.ConfigParser()
+    cf.read("./build/kcfg.ini")
+    secs=cf.sections()
+    for sec in secs:
+        sec_splits = str(sec).split('_')
+        if sec_splits[-4] == "m" + str(M*2) and sec_splits[-3] == "k" + str(K):
+            bm = int(cf.get(sec, 'bm'))
+            kfactor = int(cf.get(sec, 'kfactor'))
+            simd_n_in = int(cf.get(sec, 'simd_n_in'))
+            simd_n_out = int(cf.get(sec, 'simd_n_out'))
+            break    
+
+    M = M * bits
+    ngroups_per_elem = 8 // g
+
+    # (M // bits, K, bits)
+    w = np.stack([(w >> ib) & 1 for ib in range(bits)], axis=-1)
+    # print(w)
+    # (M // bits, K, bits) -> (M // bits, bits, K) -> (M // bits, bits, K) -> (M // bits, bits, K // g, g)
+    w = w.transpose(0, 2, 1).reshape(M // bits, bits, K // g, g)
+    w = sum([(w[:, :, :, ig] << ig) for ig in range(g)])
+    # print(w)
+    # 0, 16, 1, 17, 2, 18, 3, 19, 4, 20, 5, 21, 6, 22, 7, 23, 8, 24, 9, 25, 10, 26, 11, 27, 12, 28, 13, 29, 14, 30, 15, 31
+    # for bits=3
+    # bit0: [0, 8), bit1: [8, 16), bit2: [16, 24), bit0: [24, 32)
+    # (M // bits // simd_n_float16, bits, simd_n_float16, K // g)
+    w = w.reshape(M // bits // simd_n_out, simd_n_out, bits, K // g).transpose(0, 2, 1, 3)
+    mgroup = ngroups_per_elem * simd_n_in
+    w = w.reshape(M // mgroup, ngroups_per_elem, simd_n_in, K // g).transpose(0, 2, 1, 3)
+    #             0        1             2             3                 4                  5
+    w = w.reshape(M // bm, bm // mgroup, simd_n_in, ngroups_per_elem, K // g // kfactor, kfactor).transpose(0, 4, 1, 5, 2, 3)
+    w = sum([(w[:, :, :, :, :, ng] << (ng * g)) for ng in range(ngroups_per_elem)])
+    w = w.reshape(M // bm, K // g // kfactor, bm // mgroup, kfactor, simd_n_in)
+    # input size of current TVM API
+    w = w.reshape(M // bm, K // g, bm // ngroups_per_elem)
+
+    return w
+
 def transform_to_i2(x : NDArray):
-    # print(x.dtype)
     x_num = np.prod(x.shape)
-    x = np.reshape(x, x_num)
+    tile_x = np.reshape(x, x_num)
     scale = 1
     for i in range(x_num):
-        if x[i] != 0:
-            scale = x[i]
+        if tile_x[i] != 0:
+            scale = tile_x[i]
             break
-    x = np.divide(x, scale)
-    x = x.astype(np.uint8)
-    # x = (x.astype(np.int8) + 2).astype(np.uint8)
-    x = np.reshape(x, [x.shape[0] // 4, 4])
-    keep_bit = {0:192, 1:48, 2:12, 3:3}
-    ans = np.zeros([x_num // 4], dtype=np.uint8)
-    for i in range(4):
-        x_bit_col = x[:, i]
-        x_bit_shift = np.left_shift(x_bit_col, 6 - i * 2)
-        x_bit_shift = np.bitwise_and(x_bit_shift, keep_bit[i])
-        ans = np.bitwise_or(ans, x_bit_shift)
-    # print(scale.dtype)
+    tile_x = np.divide(tile_x, scale)
+    tile_x = (tile_x.astype(np.int8) + 2).astype(np.uint8)
+    ans = np.reshape(tile_x, x.shape)
     return ans, scale
 
 class UnquantizedTensor(Tensor):
@@ -1256,19 +1292,17 @@ class OutputFile:
             elapsed = time.time() - start
             size = ' x '.join(f"{dim:6d}" for dim in lazy_tensor.shape)
             padi = len(str(len(model)))
-            print(name)
-            print(ndarray.dtype)
-            # asfasf
             logger.info(
                 f"[{i + 1:{padi}d}/{len(model)}] Writing tensor {name:38s} | size {size:16} | type {lazy_tensor.data_type.name:4} | T+{int(elapsed):4}"
             )
-            print(ndarray)
-            self.gguf.write_tensor_data(ndarray)
+            
             if i2_scale is not None:
-                i2_scale = np.tile(np.array(1).astype(np.uint8), 32)
-                print(i2_scale.dtype)
-                print(i2_scale)
+                i2_scale = np.tile(i2_scale, 8)
+                ndarray = preprocess_weights(ndarray)
+                self.gguf.write_tensor_data(ndarray)
                 self.gguf.write_tensor_data(i2_scale)
+            else:
+                self.gguf.write_tensor_data(ndarray)
 
     def close(self) -> None:
         self.gguf.close()
@@ -1294,13 +1328,7 @@ class OutputFile:
     @staticmethod
     def do_item(item: tuple[str, LazyTensor]) -> tuple[DataType, NDArray]:
         name, lazy_tensor = item
-        # print(name)
-        # print(lazy_tensor.data_type)
-        # print(lazy_tensor.shape)
-        # print("check first")
         tensor = lazy_tensor.load().to_ggml()
-        # print(lazy_tensor.data_type)
-        # print(tensor.ndarray)
         return (lazy_tensor.data_type, tensor.ndarray, tensor.i2_scale)
 
     @staticmethod
@@ -1405,6 +1433,10 @@ def convert_model_names(model: LazyModel, params: Params, skip_unknown: bool) ->
             del tmp[f"model.layers.{i}.self_attn.W_pack.weight"]
         else:
             break
+    
+    # check if is bitnet
+    if ARCH == 33:
+        del tmp['output.weight']
 
     out: LazyModel = {}
     for name, lazy_tensor in model.items():

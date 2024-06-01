@@ -184,17 +184,17 @@ void ggml_tmac_transform_tensor(struct ggml_tensor * tensor) {
     tmac_float_type * scales = (tmac_float_type *) aligned_malloc(scales_size * sizeof(tmac_float_type));
     
     qweights = (uint8_t *)tensor->data;
-    printf("qweight[0]:%d\n", qweights[0]);
-    printf("qweight[1]:%d\n", qweights[1]);
-    printf("qweight[2]:%d\n", qweights[2]);
+    // printf("qweight[0]:%d\n", qweights[0]);
+    // printf("qweight[1]:%d\n", qweights[1]);
+    // printf("qweight[2]:%d\n", qweights[2]);
 
-    printf("qweight[-1]:%d\n", qweights[k * m / 8 - 1]);
-    printf("qweight[-2]:%d\n", qweights[k * m / 8 - 2]);
-    uint8_t * scale = (uint8_t * )((char*) (tensor->data) + (k * m));
-    printf("scale:%d\n", *scale);
-    // for (int i = 0; i < scales_size; i++) {
-    //     scales[i] = *scale;
-    // }
+    // printf("qweight[-1]:%d\n", qweights[k * m / 8 - 1]);
+    // printf("qweight[-2]:%d\n", qweights[k * m / 8 - 2]);
+    float * scale = (float * )((qweights) + (k * m) / 8);
+    // printf("scale:%f\n", *scale);
+    for (int i = 0; i < scales_size; i++) {
+        scales[i] = *scale;
+    }
     
     tensor->extra = tmac_tensor_extras + tmac_tensor_extras_index;
     tmac_tensor_extras[tmac_tensor_extras_index++] = {

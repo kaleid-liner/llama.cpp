@@ -5445,7 +5445,7 @@ static bool llm_load_tensors(
                     // output
                     {
                         model.output_norm = ml.create_tensor(ctx_output,       tn(LLM_TENSOR_OUTPUT_NORM, "weight"), {n_embd});
-                        model.output      = ml.create_tensor(ctx_output_split, tn(LLM_TENSOR_OUTPUT,      "weight"), {n_embd, bitnet_n_vocab});
+                        // model.output      = ml.create_tensor(ctx_output_split, tn(LLM_TENSOR_OUTPUT,      "weight"), {n_embd, bitnet_n_vocab});
                     }
 
                     const uint32_t n_ff = hparams.n_ff;
@@ -9051,7 +9051,7 @@ struct llm_build_context {
         cb(cur, "result_norm", -1);
 
         // lm_head
-        cur = ggml_mul_mat(ctx0, model.output, cur);
+        cur = ggml_mul_mat(ctx0, model.tok_embd, cur);
         cb(cur, "result_output", -1);
 
         ggml_build_forward_expand(gf, cur);

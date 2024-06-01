@@ -1,17 +1,36 @@
 import numpy as np
+import configparser
 
-num = ['00', '01', '00', 'ff']
+def export_cfg():
+    cf=configparser.ConfigParser()
+    cf.read("./build/kcfg.ini")
+    secs=cf.sections()  # 获得所有区域
+    # print("sections:",secs)
+    m = 800
+    k = 3200
+    for sec in secs:
+        sec_splits = str(sec).split('_')
+        if sec_splits[-4] == "m" + str(m*2) and sec_splits[-3] == "k" + str(k):
+            bm = cf.get(sec, 'bm')
+            kfactor = cf.get(sec, 'kfactor')
+            simd_n_in = cf.get(sec, 'simd_n_in')
+            simd_n_out = cf.get(sec, 'simd_n_out')
+            group_size = cf.get(sec, 'group_size')
+            break
+        
+export_cfg()
+# num = ['00', '01', '00', 'ff']
 
-check = []
+# check = []
 
-for i in range(4):
-    for j in range(4):
-        for m in range(4):
-            check.append('\n')
-            for n in range(4):
-                check.append('0x' + num[n] + num[m] + num[j] + num[i] + ', ')
+# for i in range(4):
+#     for j in range(4):
+#         for m in range(4):
+#             check.append('\n')
+#             for n in range(4):
+#                 check.append('0x' + num[n] + num[m] + num[j] + num[i] + ', ')
 
-print(''.join(check))
+# print(''.join(check))
 
 # def transform_to_i2(x):
 #     x_num = np.prod(x.shape)
