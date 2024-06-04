@@ -111,7 +111,7 @@ bool ggml_tmac_can_mul_mat(const struct ggml_tensor * src0, const struct ggml_te
     if ((is_type_supported(src0->type)) &&
         src1->type == GGML_TYPE_F32 &&
         dst->type == GGML_TYPE_F32 &&
-        src0->backend == GGML_BACKEND_CPU &&
+        src0->backend == GGML_BACKEND_TYPE_CPU &&
         src1->ne[1] == 1) {
         return true;
     }
@@ -146,7 +146,7 @@ void ggml_tmac_mul_mat_task_compute(void * src0, void * scales, void * qlut, voi
 }
 
 void ggml_tmac_transform_tensor(struct ggml_tensor * tensor) {
-    if (!(is_type_supported(tensor->type) && tensor->backend == GGML_BACKEND_CPU && tensor->extra == nullptr)) {
+    if (!(is_type_supported(tensor->type) && tensor->backend == GGML_BACKEND_TYPE_CPU && tensor->extra == nullptr)) {
         return;
     }
 
