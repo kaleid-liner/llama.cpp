@@ -111,7 +111,8 @@ bool ggml_tmac_can_mul_mat(const struct ggml_tensor * src0, const struct ggml_te
     if ((is_type_supported(src0->type)) &&
         src1->type == GGML_TYPE_F32 &&
         dst->type == GGML_TYPE_F32 &&
-        src0->backend == GGML_BACKEND_CPU) {
+        src0->backend == GGML_BACKEND_CPU &&
+        src1->ne[1] == 1) {
         return true;
     }
     return false;
