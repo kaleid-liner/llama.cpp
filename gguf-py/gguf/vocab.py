@@ -109,8 +109,6 @@ class SpecialVocab:
         if tid < 0:
             raise ValueError(f'invalid value for special token type {typ}: {tid}')
         if self.n_vocab is None or tid < self.n_vocab:
-            if typ in self.special_token_ids:
-                return
             self.special_token_ids[typ] = tid
             return
         logger.warning(f'Special token type {typ}, id {tid} out of range, must be under {self.n_vocab} - skipping')
