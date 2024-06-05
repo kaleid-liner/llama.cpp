@@ -1215,6 +1215,7 @@ add_library(ggml OBJECT
             ${GGML_SOURCES_ROCM}      ${GGML_HEADERS_ROCM}
             ${GGML_SOURCES_TMAC}      ${GGML_HEADERS_TMAC}
             ${GGML_SOURCES_LLAMAFILE} ${GGML_HEADERS_LLAMAFILE}
+            ${GGML_SOURCES_TMAC}    ${GGML_HEADERS_TMAC}
             )
 
 target_include_directories(ggml PUBLIC . ${LLAMA_EXTRA_INCLUDES})

@@ -617,7 +617,7 @@ int main(int argc, char ** argv) {
                     embd.erase(embd.begin(), embd.begin() + i);
                 }
             }
-
+            // printf("before devode\n");
             // evaluate tokens in batches
             // embd is typically prepared beforehand to fit within a batch, but not always
             if (ctx_guidance) {

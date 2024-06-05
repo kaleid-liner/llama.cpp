@@ -1,3 +1,4 @@
+*.pth
 *.o
 *.a
 *.so
@@ -40,7 +41,6 @@ cmake-build-*
 out/
 tmp/
 
-models/*
 models-mnt
 
 /Pipfile

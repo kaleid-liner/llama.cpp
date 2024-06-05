@@ -137,6 +137,7 @@ class MODEL_ARCH(IntEnum):
     COMMAND_R  = auto()
     DBRX       = auto()
     OLMO       = auto()
+    BITNET     = auto()
 
 
 class MODEL_TENSOR(IntEnum):
@@ -179,6 +180,8 @@ class MODEL_TENSOR(IntEnum):
     SSM_A              = auto()
     SSM_D              = auto()
     SSM_OUT            = auto()
+    FFN_SUB_NORM       = auto()
+    ATTN_SUB_NORM      = auto()
 
 
 MODEL_ARCH_NAMES: dict[MODEL_ARCH, str] = {
@@ -214,6 +217,7 @@ MODEL_ARCH_NAMES: dict[MODEL_ARCH, str] = {
     MODEL_ARCH.COMMAND_R:      "command-r",
     MODEL_ARCH.DBRX:           "dbrx",
     MODEL_ARCH.OLMO:           "olmo",
+    MODEL_ARCH.BITNET:         "bitnet",
 }
 
 TENSOR_NAMES: dict[MODEL_TENSOR, str] = {
@@ -256,6 +260,8 @@ TENSOR_NAMES: dict[MODEL_TENSOR, str] = {
     MODEL_TENSOR.SSM_A:              "blk.{bid}.ssm_a",
     MODEL_TENSOR.SSM_D:              "blk.{bid}.ssm_d",
     MODEL_TENSOR.SSM_OUT:            "blk.{bid}.ssm_out",
+    MODEL_TENSOR.ATTN_SUB_NORM:      "blk.{bid}.attn_sub_norm",
+    MODEL_TENSOR.FFN_SUB_NORM:       "blk.{bid}.ffn_sub_norm",
 }
 
 MODEL_TENSORS: dict[MODEL_ARCH, list[MODEL_TENSOR]] = {
@@ -463,6 +469,24 @@ MODEL_TENSORS: dict[MODEL_ARCH, list[MODEL_TENSOR]] = {
         MODEL_TENSOR.FFN_UP,
         MODEL_TENSOR.ATTN_Q_NORM,
         MODEL_TENSOR.ATTN_K_NORM,
+    ],
+    MODEL_ARCH.BITNET: [
+        MODEL_TENSOR.ATTN_Q,
+        MODEL_TENSOR.ATTN_K,
+        MODEL_TENSOR.ATTN_V,
+        MODEL_TENSOR.TOKEN_EMBD,
+        MODEL_TENSOR.OUTPUT_NORM,
+        MODEL_TENSOR.ROPE_FREQS,
+        MODEL_TENSOR.ATTN_NORM,
+        MODEL_TENSOR.ATTN_QKV,
+        MODEL_TENSOR.ATTN_OUT,
+        MODEL_TENSOR.ATTN_ROT_EMBD,
+        MODEL_TENSOR.FFN_NORM,
+        MODEL_TENSOR.FFN_GATE,
+        MODEL_TENSOR.FFN_DOWN,
+        MODEL_TENSOR.FFN_UP,
+        MODEL_TENSOR.ATTN_SUB_NORM,
+        MODEL_TENSOR.FFN_SUB_NORM,
     ],
     MODEL_ARCH.QWEN: [
         MODEL_TENSOR.TOKEN_EMBD,
@@ -817,6 +841,7 @@ class GGMLQuantizationType(IntEnum):
     I64     = 27
     F64     = 28
     IQ1_M   = 29
+    I2      = 30
 
 
 class GGUFEndian(IntEnum):
@@ -888,6 +913,7 @@ GGML_QUANT_SIZES = {
     GGMLQuantizationType.I64:     (1, 8),
     GGMLQuantizationType.F64:     (1, 8),
     GGMLQuantizationType.IQ1_M:   (256, QK_K // 8 + QK_K // 16  + QK_K // 32),
+    GGMLQuantizationType.I2:      (4, 1),
 }
 
 
