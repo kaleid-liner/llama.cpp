@@ -190,9 +190,9 @@ void ggml_tmac_transform_tensor(struct ggml_tensor * tensor) {
         qweights = (uint8_t *) aligned_malloc(k * m / 8);
     } else {
         qweights = (uint8_t *)tensor->data;
-        float * scale = (float * )((qweights) + (k * m) / 8);
+        float * i2_scales = (float * )(qweights + k * m / 8);
         for (int i = 0; i < scales_size; i++) {
-            scales[i] = *scale;
+            scales[i] = (tmac_float_type) i2_scales[i];
         }
     }
     
