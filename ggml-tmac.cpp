@@ -176,7 +176,7 @@ void ggml_tmac_transform_tensor(struct ggml_tensor * tensor) {
     LOG(INFO) << "kcfg (bm=" << bm << ", simd_n_in=" << simd_n_in << ", simd_n_out=" << simd_n_out << ", kfactor=" << kfactor
               << ", group_size=" << group_size << ", lut_scales_size=" << lut_scales_size << ", scales_size=" << scales_size << ", n_tile_num=" << n_tile_num << ")";
     if (bm == 0) {
-        LOG(INFO) << "Failed to find kcfg. Abort transforming";
+        LOG(WARNING) << "Failed to find kcfg. Abort transforming";
         return;
     }
     const int mgroup = ngroups_per_elem * simd_n_in;
@@ -189,13 +189,13 @@ void ggml_tmac_transform_tensor(struct ggml_tensor * tensor) {
     if (do_permutate(tensor->type)) {
         qweights = (uint8_t *) aligned_malloc(k * m / 8);
     } else {
-        qweights = (uint8_t *)tensor->data;
+        qweights = (uint8_t *) tensor->data;
         float * i2_scales = (float * )(qweights + k * m / 8);
         for (int i = 0; i < scales_size; i++) {
             scales[i] = (tmac_float_type) i2_scales[i];
         }
     }
-    
+
     tensor->extra = tmac_tensor_extras + tmac_tensor_extras_index;
     tmac_tensor_extras[tmac_tensor_extras_index++] = {
         /* .lut_scales_size = */ lut_scales_size,
