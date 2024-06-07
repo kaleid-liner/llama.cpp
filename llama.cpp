@@ -2011,15 +2011,6 @@ struct llama_layer {
     struct ggml_tensor * bo;
     struct ggml_tensor * bqkv;
 
-    // attention scale
-    struct ggml_tensor * wq_scale;
-    struct ggml_tensor * wk_scale;
-    struct ggml_tensor * wv_scale;
-    struct ggml_tensor * wo_scale;
-    struct ggml_tensor * ffn_up_scale;
-    struct ggml_tensor * ffn_down_scale;
-    struct ggml_tensor * ffn_gate_scale;
-
     // normalization
     struct ggml_tensor * ffn_norm;
     struct ggml_tensor * ffn_norm_b;
@@ -6393,16 +6384,6 @@ static struct ggml_tensor * llm_build_norm(
     return cur;
 }
 
-// for bitnet
-static struct ggml_tensor * quant_bitlinear(
-        struct ggml_context * ctx,
-        struct ggml_tensor  * cur)
-    {
-        return ggml_bitlinear_quant(ctx, cur);
-
-        return cur;
-    }
-
 static struct ggml_tensor * llm_build_ffn(
         struct ggml_context * ctx,
          struct ggml_tensor * cur,
@@ -6416,20 +6397,8 @@ static struct ggml_tensor * llm_build_ffn(
             llm_ffn_op_type   type_op,
           llm_ffn_gate_type   type_gate,
          const llm_build_cb & cb,
-                        int   il,
-        const llama_hparams & hparams = llama_hparams(),
-         struct ggml_tensor * ffn_sub_norm = nullptr,
-         struct ggml_tensor * up_scale     = nullptr,
-         struct ggml_tensor * gate_scale   = nullptr,
-         struct ggml_tensor * down_scale   = nullptr,
-         bool isbitnet = false,
-         bool istmac   = true
-                        ) {
-    struct ggml_tensor * tmp;
-    if (isbitnet) {
-        cur = quant_bitlinear(ctx, cur);
-    }
-    tmp = ggml_mul_mat(ctx, up, cur);
+                        int   il) {
+    struct ggml_tensor * tmp = up ? ggml_mul_mat(ctx, up, cur) : cur;
     cb(tmp, "ffn_up", il);
 
     if (up_b) {
@@ -6494,21 +6463,7 @@ static struct ggml_tensor * llm_build_ffn(
         cb(cur, "ffn_gate_par", il);
     }
 
-    // N2 & B4
-    // N2 for silu(x1) * x3
-    if (isbitnet)
-    {
-        cur = llm_build_norm(ctx, cur, hparams,
-                        ffn_sub_norm, NULL,
-                        LLM_NORM_RMS, cb, il);
-        cb(cur, "ffn_sub_norm", il);
-    }
-    // B4 for w2
-    if (isbitnet) {
-        cur = quant_bitlinear(ctx, cur);
-    }
     cur = ggml_mul_mat(ctx, down, cur);
-    
     if (down_b) {
         cb(cur, "ffn_down", il);
     }
@@ -6626,15 +6581,12 @@ static struct ggml_tensor * llm_build_kqv(
          struct ggml_tensor * q_cur,
          struct ggml_tensor * kq_mask,
          struct ggml_tensor * kq_pos,
+         struct ggml_tensor * attn_sub_norm,
                     int32_t   n_tokens,
                     int32_t   n_kv,
                     float     kq_scale,
          const llm_build_cb & cb,
-                    int       il,
-         struct ggml_tensor * attn_sub_norm = nullptr,
-         struct ggml_tensor * wo_scale = nullptr,
-                    bool      isbitnet = false
-                    ) {
+                    int       il) {
     const int64_t n_ctx         = cparams.n_ctx;
     const int64_t n_head        = hparams.n_head;
     const int64_t n_head_kv     = hparams.n_head_kv;
@@ -6746,18 +6698,12 @@ static struct ggml_tensor * llm_build_kqv(
         cur = ggml_cont_2d(ctx, kqv_merged, n_embd_head_k*n_head, n_tokens);
         cb(cur, "kqv_merged_cont", il);
     }
-    
-    // B2 & N1
-    // N1 for output
-    if (isbitnet)
-    {
+
+    if (model.arch == LLM_ARCH_BITNET) {
         cur = llm_build_norm(ctx, cur, hparams,
                         attn_sub_norm, NULL,
                         LLM_NORM_RMS, cb, il);
         cb(cur, "attn_sub_norm", il);
-
-        // B2 for wo
-        cur = quant_bitlinear(ctx, cur);
 
         ggml_build_forward_expand(graph, cur);
     }
@@ -6807,7 +6753,7 @@ static struct ggml_tensor * llm_build_kv(
     struct ggml_tensor * cur;
 
     cur  = llm_build_kqv(ctx, model, hparams, cparams, kv, graph, wo, wo_b,
-            q_cur, kq_mask, kq_pos, n_tokens, n_kv, kq_scale, cb, il);
+            q_cur, kq_mask, kq_pos, nullptr, n_tokens, n_kv, kq_scale, cb, il);
     cb(cur, "kqv_out", il);
 
     return cur;
@@ -8884,7 +8830,7 @@ struct llm_build_context {
 
     struct ggml_cgraph * build_bitnet() {
         struct ggml_cgraph * gf = ggml_new_graph_custom(ctx0, LLAMA_MAX_NODES, false);
-        bool isbitnet = true;
+
         const int64_t n_embd_head = hparams.n_embd_head_v;
         GGML_ASSERT(n_embd_head == hparams.n_embd_head_k);
 
@@ -8910,10 +8856,7 @@ struct llm_build_context {
             {
                 // compute Q and K and RoPE them
                 // B1.Q
-                cur = quant_bitlinear(ctx0, cur);
-                struct ggml_tensor * Qcur;
-                Qcur = ggml_mul_mat(ctx0, model.layers[il].wq, cur);
-
+                struct ggml_tensor * Qcur = ggml_mul_mat(ctx0, model.layers[il].wq, cur);
                 cb(Qcur, "Qcur", il);
                 if (model.layers[il].bq) {
                     Qcur = ggml_add(ctx0, Qcur, model.layers[il].bq);
@@ -8921,9 +8864,7 @@ struct llm_build_context {
                 }
 
                 // B1.K
-                struct ggml_tensor * Kcur;
-                Kcur = ggml_mul_mat(ctx0, model.layers[il].wk, cur);
-
+                struct ggml_tensor * Kcur = ggml_mul_mat(ctx0, model.layers[il].wk, cur);
                 cb(Kcur, "Kcur", il);
                 if (model.layers[il].bk) {
                     Kcur = ggml_add(ctx0, Kcur, model.layers[il].bk);
@@ -8931,9 +8872,7 @@ struct llm_build_context {
                 }
 
                 // B1.V
-                struct ggml_tensor * Vcur;
-                Vcur = ggml_mul_mat(ctx0, model.layers[il].wv, cur);
-
+                struct ggml_tensor * Vcur = ggml_mul_mat(ctx0, model.layers[il].wv, cur);
                 cb(Vcur, "Vcur", il);
                 if (model.layers[il].bv) {
                     Vcur = ggml_add(ctx0, Vcur, model.layers[il].bv);
@@ -8957,8 +8896,7 @@ struct llm_build_context {
                 llm_build_kv_store(ctx0, hparams, cparams, kv_self, gf, Kcur, Vcur, n_tokens, kv_head, cb, il);
                 cur = llm_build_kqv(ctx0, model, hparams, cparams, kv_self, gf,
                         model.layers[il].wo, model.layers[il].bo, 
-                        Qcur, KQ_mask, nullptr, n_tokens, n_kv, 1.0f/sqrtf(float(n_embd_head)), cb, il,
-                        model.layers[il].attn_sub_norm, model.layers[il].wo_scale, isbitnet);
+                        Qcur, KQ_mask, nullptr, model.layers[il].attn_sub_norm, n_tokens, n_kv, 1.0f/sqrtf(float(n_embd_head)), cb, il);
                 cb(cur, "kqv_out", 0);
             }
 
@@ -8979,15 +8917,25 @@ struct llm_build_context {
                         LLM_NORM_RMS, cb, il);
                 cb(cur, "ffn_norm", il);
 
-                cur = llm_build_ffn(ctx0, cur,
-                        model.layers[il].ffn_up,   NULL,
-                        model.layers[il].ffn_gate, NULL,
-                        model.layers[il].ffn_down, NULL,
-                        NULL,
-                        LLM_FFN_SILU, LLM_FFN_PAR, cb, il, hparams, model.layers[il].ffn_sub_norm,
-                        model.layers[il].ffn_up_scale, model.layers[il].ffn_gate_scale, model.layers[il].ffn_down_scale,
-                        isbitnet);
-                cb(cur, "ffn_out", il);
+                struct ggml_tensor *tmp = ggml_mul_mat(ctx0, model.layers[il].ffn_up, cur);
+                cb(tmp, "ffn_up", il);
+
+                cur = ggml_mul_mat(ctx0, model.layers[il].ffn_gate, cur);
+                cb(cur, "ffn_gate", il);
+
+                cur = ggml_silu(ctx0, cur);
+                cb(cur, "ffn_silu", il);
+
+                cur = ggml_mul(ctx0, cur, tmp);
+                cb(cur, "ffn_gate_par", il);
+
+                cur = llm_build_norm(ctx0, cur, hparams,
+                                model.layers[il].ffn_sub_norm, NULL,
+                                LLM_NORM_RMS, cb, il);
+                cb(cur, "ffn_sub_norm", il);
+
+                cur = ggml_mul_mat(ctx0, model.layers[il].ffn_down, cur);
+                cb(cur, "ffn_down", il);
             }
 
             cur = ggml_add(ctx0, cur, ffn_inp);
