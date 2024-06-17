@@ -12847,9 +12847,17 @@ UseGgmlGemm1:;
         // src1: activation, ne10 = k, ne11 = m
         char * wdata = params->wdata;
 
-        // g = 4
-        int8_t * qlut = wdata;
+        struct tmac_tensor_extra * wt = src0->extra;
+        char * cur_wdata = wdata;
+        tmac_float_type * tmac_f_ptr = wdata;
+        if (sizeof(tmac_float_type) == 2) {
+            cur_wdata = wdata + MAX(ne10, ne01) * ne11 * sizeof(tmac_float_type);
+        };
+        int8_t * qlut = cur_wdata;
         tmac_float_type * lut_scales = (tmac_float_type *) (qlut + ne10 * ne11 * 4);
+        tmac_float_type * lut_biases = (tmac_float_type *) (lut_scales + wt->lut_scales_size * ne11);
+
+        // g = 4
         if (params->type == GGML_TASK_TYPE_INIT) {
             if (ith != 0) {
                 return;
@@ -12860,11 +12868,6 @@ UseGgmlGemm1:;
             // It's better to do this in ggml-backend.c,
             // but llama.cpp directly manipulates tensor.data for cbe in a lot of space.
             ggml_tmac_transform_tensor(src0);
-
-            struct tmac_tensor_extra * wt = src0->extra;
-            tmac_float_type * lut_biases = (tmac_float_type *) (lut_scales + wt->lut_scales_size * ne11);
-            tmac_float_type * tmac_f_ptr = (tmac_float_type *) (lut_biases + wt->lut_scales_size * ne11);
-
             GGML_ASSERT(src1->type == GGML_TYPE_F32);
             tmac_float_type * act_input;
             if (sizeof(tmac_float_type) == 2) {
@@ -12883,10 +12886,6 @@ UseGgmlGemm1:;
 
             return;
         }
-
-        struct tmac_tensor_extra * wt = src0->extra;
-        tmac_float_type * lut_biases = (tmac_float_type *) (lut_scales + wt->lut_scales_size * ne11);
-        tmac_float_type * tmac_f_ptr = (tmac_float_type *) (lut_biases + wt->lut_scales_size * ne11);
 
         tmac_float_type * act_output;
         if (sizeof(tmac_float_type) == 2) {
