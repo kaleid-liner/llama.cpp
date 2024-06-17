@@ -80,26 +80,27 @@ static bool is_type_supported(enum ggml_type type) {
 
 static bool do_permutate(enum ggml_type type) {
     if (type == GGML_TYPE_I2) {
+        // Add additional args to decide if permuted I2 or naive I2
         return false;
     } else {
         return true;
     }
 }
 
-template <int Bits, int SIMD_LEN = 16>
-struct BlockQTypeAccessor {
-    using block_t = std::conditional_t<Bits == 2, block_iq2_xxs, std::conditional_t<Bits == 3, block_iq3_xxs, block_q4_0>>;
+struct BlockQ40TypeAccessor {
+    using block_t = block_q4_0;
 
-    static constexpr int group_size = (sizeof(block_t) - sizeof(ggml_fp16_t)) * 8 / Bits;
-
-    static constexpr int simd_n_elem = SIMD_LEN * 8 / Bits;
+    static constexpr int BITS = 4;
+    static constexpr int SIMD_LEN = 16;
+    static constexpr int group_size = (sizeof(block_t) - sizeof(ggml_fp16_t)) * 8 / BITS;
+    static constexpr int simd_n_elem = SIMD_LEN * 8 / BITS;
 
     static uint8_t get_q(const void * data, int idx) {
         const uint8_t * qs = (const uint8_t *) ((((const block_t *) data)[idx / group_size]).qs);
         int internal_idx = idx % group_size;
         const uint8_t * simd_qs = qs + internal_idx / simd_n_elem * SIMD_LEN;
         int simd_idx = internal_idx % simd_n_elem;
-        return simd_qs[simd_idx % SIMD_LEN] >> (simd_idx / SIMD_LEN * Bits);
+        return simd_qs[simd_idx % SIMD_LEN] >> (simd_idx / SIMD_LEN * BITS);
     }
 
     static tmac_float_type get_scale(const void * data, int idx) {
@@ -110,6 +111,23 @@ struct BlockQTypeAccessor {
         } else {
             return ggml_fp16_to_fp32(((const block_t *) data)[idx / group_size].d);
         }
+    }
+};
+
+struct BlockI2TypeAccessor {
+    static constexpr int BITS = 2;
+    static constexpr int n_elem = 8 / BITS;
+
+    static uint8_t get_q(const void * data, int idx) {
+        const uint8_t * qs = (const uint8_t *) data;
+        int elem_idx = idx % n_elem;
+        return qs[idx / n_elem] >> (elem_idx * BITS);
+    }
+
+    static tmac_float_type get_scale(const void * data, int idx, int group_size) {
+        const float * ss = (const float *) data;
+        float s = ss[idx / group_size];
+        return (tmac_float_type) s;
     }
 };
 
@@ -137,6 +155,7 @@ size_t ggml_tmac_mul_mat_get_wsize(const struct ggml_tensor * src0, const struct
         // Need fp32 to fp16 conversion
         wsize += std::max(ne10, ne01) * ne11 * sizeof(tmac_float_type);
     }
+    wsize = ((wsize - 1) / TMAC::kAllocAlignment + 1) * TMAC::kAllocAlignment;
     return wsize;
 }
 
@@ -172,11 +191,12 @@ void ggml_tmac_transform_tensor(struct ggml_tensor * tensor) {
     const int lut_scales_size = kcfg.lut_scales_size;
     const int scales_size     = kcfg.scales_size;
     const int n_tile_num      = kcfg.n_tile_num;
-    LOG(INFO) << "Transforming tensor: " << tensor->name << " (m: " << m << ", k: " << k << ", bits: " << bits << ")";
-    LOG(INFO) << "kcfg (bm=" << bm << ", simd_n_in=" << simd_n_in << ", simd_n_out=" << simd_n_out << ", kfactor=" << kfactor
-              << ", group_size=" << group_size << ", lut_scales_size=" << lut_scales_size << ", scales_size=" << scales_size << ", n_tile_num=" << n_tile_num << ")";
+    DLOG(INFO) << "Transforming tensor: " << tensor->name << " (m: " << m << ", k: " << k << ", bits: " << bits << ")";
+    DLOG(INFO) << "kcfg (bm=" << bm << ", simd_n_in=" << simd_n_in << ", simd_n_out=" << simd_n_out << ", kfactor=" << kfactor
+               << ", group_size=" << group_size << ", lut_scales_size=" << lut_scales_size << ", scales_size=" << scales_size << ", n_tile_num=" << n_tile_num << ")";
     if (bm == 0) {
-        LOG(WARNING) << "Failed to find kcfg. Abort transforming";
+        // Instead of fatal error, try to avoid using t-mac?
+        LOG(FATAL) << "Failed to find kcfg. Abort transforming";
         return;
     }
     const int mgroup = ngroups_per_elem * simd_n_in;
@@ -219,12 +239,10 @@ void ggml_tmac_transform_tensor(struct ggml_tensor * tensor) {
             for (int ik = 0; ik < k; ik++) {
                 for (int ib = 0; ib < bits; ib++) {
                     uint8_t v;
-                    if (bits == 2) {
-                        v = BlockQTypeAccessor<2>::get_q(tensor->data, im * k + ik);
-                    } else if (bits == 3) {
-                        v = BlockQTypeAccessor<3>::get_q(tensor->data, im * k + ik);
-                    } else if (bits == 4) {
-                        v = BlockQTypeAccessor<4>::get_q(tensor->data, im * k + ik);
+                    if (tensor->type == GGML_TYPE_Q4_0) {
+                        v = BlockQ40TypeAccessor::get_q(tensor->data, im * k + ik);
+                    } else if (tensor->type == GGML_TYPE_I2) {
+                        v = BlockI2TypeAccessor::get_q(tensor->data, im * k + ik);
                     }
                     buf1[im * k * bits + ik * bits + ib] = (v >> ib) & 1;
                 }
@@ -302,39 +320,31 @@ void ggml_tmac_transform_tensor(struct ggml_tensor * tensor) {
             }
         }
 
-        int m_group_size, k_group_size;
+        const float * i2_scales = (const float * ) ((const uint8_t *) tensor->data + k * m / 8);
         if (scales_size < m / bits) {  // BitNet-like scale (m_groups,)
-            m_group_size = m / bits / scales_size;
-            k_group_size = k;
+            for (int i = 0; i < scales_size; i++) {
+                scales[i] = (tmac_float_type) i2_scales[i];
+            }
         } else {  // GPTQ-like scale (m / bits, k / group_size)
             GGML_ASSERT(scales_size == m / bits * k / group_size);
-            m_group_size = 1;
-            k_group_size = group_size;
-        }
-
-        // scales = scales.reshape(M // bm, bm // bits, K // group_size).transpose(0, 2, 1)
-        for (int im = 0; im < m / bits; im += m_group_size) {
-            for (int ik = 0; ik < k; ik += k_group_size) {
-                tmac_float_type scale;
-                int idx = im * k + ik;
-                if (bits == 2) {
-                    scale = BlockQTypeAccessor<2>::get_scale(tensor->data, idx);
-                } else if (bits == 3) {
-                    scale = BlockQTypeAccessor<3>::get_scale(tensor->data, idx);
-                } else if (bits == 4) {
-                    scale = BlockQTypeAccessor<4>::get_scale(tensor->data, idx);
-                }
-                int new_idx;
-                if (scales_size < m / bits) {
-                    new_idx = im / m_group_size;
-                } else {
+            // scales = scales.reshape(M // bm, bm // bits, K // group_size).transpose(0, 2, 1)
+            for (int im = 0; im < m / bits; im += 1) {
+                for (int ik = 0; ik < k; ik += group_size) {
+                    tmac_float_type scale;
+                    int idx = im * k + ik;
+                    if (tensor->type == GGML_TYPE_Q4_0) {
+                        scale = BlockQ40TypeAccessor::get_scale(tensor->data, idx);
+                    } else if (tensor->type == GGML_TYPE_I2) {
+                        scale = BlockI2TypeAccessor::get_scale(i2_scales, idx, group_size);
+                    }
+                    int new_idx;
                     idx = idx / group_size;
                     int new_im = idx / (bm / bits * k / group_size);
                     int new_ibm = (idx % (bm / bits * k / group_size)) / (k / group_size);
                     int new_ik = (idx % (k / group_size));
                     new_idx = new_im * k / group_size * bm / bits + new_ik * bm / bits + new_ibm;
+                    scales[new_idx] = scale;
                 }
-                scales[new_idx] = scale;
             }
         }
 
