@@ -261,7 +261,10 @@ class GGUFWriter:
                     ti_data += self._pack("Q", ti.shape[n_dims - 1 - j])
                 ti_data += self._pack("I", ti.dtype)
                 ti_data += self._pack("Q", offset_tensor)
-                offset_tensor += GGUFWriter.ggml_pad(ti.nbytes, self.data_alignment)
+                if ti.dtype == GGMLQuantizationType.I2:
+                    offset_tensor += GGUFWriter.ggml_pad(ti.nbytes, self.data_alignment) + self.data_alignment
+                else:
+                    offset_tensor += GGUFWriter.ggml_pad(ti.nbytes, self.data_alignment)
 
             fout.write(ti_data)
             fout.flush()
@@ -348,7 +351,7 @@ class GGUFWriter:
             elif tensor_dtype == np.uint8:
                 dtype = GGMLQuantizationType.I2
             else:
-                raise ValueError("Only F16, F32, F64, I8, I16, I32, I64 tensors are supported for now")
+                raise ValueError("Only F16, F32, F64, I8, I16, I32, I64, I2 tensors are supported for now")
         else:
             dtype = raw_dtype
             if tensor_dtype == np.uint8:
@@ -379,7 +382,9 @@ class GGUFWriter:
             self.temp_file = fp
 
         shape: Sequence[int] = raw_shape if raw_shape is not None else tensor.shape
-        self.add_tensor_info(name, shape, tensor.dtype, tensor.nbytes, raw_dtype=raw_dtype)
+
+        if (raw_dtype != GGMLQuantizationType.F32 or not name.endswith("scale")):
+            self.add_tensor_info(name, shape, tensor.dtype, tensor.nbytes, raw_dtype = raw_dtype)
 
         if self.temp_file is None:
             self.tensors[-1][name].tensor = tensor
