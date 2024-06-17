@@ -1508,7 +1508,6 @@ inline static void ggml_vec_cpy_f32 (const int n, float * y, const float * x)   
 inline static void ggml_vec_neg_f32 (const int n, float * y, const float * x)                  { for (int i = 0; i < n; ++i) y[i]  = -x[i];       }
 inline static void ggml_vec_mul_f32 (const int n, float * z, const float * x, const float * y) { for (int i = 0; i < n; ++i) z[i]  = x[i]*y[i];   }
 inline static void ggml_vec_div_f32 (const int n, float * z, const float * x, const float * y) { for (int i = 0; i < n; ++i) z[i]  = x[i]/y[i];   }
-inline static void ggml_vec_mul_f32_bitnet (const int n, float * y, const float x) { for (int i = 0; i < n; ++i) y[i]  = y[i] * x;   }
 
 static void ggml_vec_dot_f32(int n, float * restrict s, size_t bs, const float * restrict x, size_t bx, const float * restrict y, size_t by, int nrc) {
    assert(nrc == 1);
@@ -2212,11 +2211,9 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
 
     "CROSS_ENTROPY_LOSS",
     "CROSS_ENTROPY_LOSS_BACK",
-    "BITLINEAR_QUANT",
-    "BITNET_MUL_MAT",
 };
 
-static_assert(GGML_OP_COUNT == 79, "GGML_OP_COUNT != 79");
+static_assert(GGML_OP_COUNT == 77, "GGML_OP_COUNT != 77");
 
 static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "none",
@@ -2305,12 +2302,9 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
 
     "cross_entropy_loss(x,y)",
     "cross_entropy_loss_back(x,y)",
-
-    "bitlinear(x)",
-    "bitnet_mul_mat(x,y)"
 };
 
-static_assert(GGML_OP_COUNT == 79, "GGML_OP_COUNT != 79");
+static_assert(GGML_OP_COUNT == 77, "GGML_OP_COUNT != 77");
 
 static_assert(GGML_OP_POOL_COUNT == 2, "GGML_OP_POOL_COUNT != 2");
 
@@ -2352,7 +2346,6 @@ static void ggml_setup_op_has_task_pass(void) {
 
         p[GGML_OP_ACC                    ] = true;
         p[GGML_OP_MUL_MAT                ] = true;
-        p[GGML_OP_BITNET_MUL_MAT         ] = true;
         p[GGML_OP_MUL_MAT_ID             ] = true;
         p[GGML_OP_OUT_PROD               ] = true;
         p[GGML_OP_SET                    ] = true;
@@ -4297,47 +4290,6 @@ struct ggml_tensor * ggml_mean(
 
     return result;
 }
-
-struct ggml_tensor * ggml_bitnet_mul_mat(
-        struct ggml_context * ctx,
-        struct ggml_tensor  * a,
-        struct ggml_tensor  * b,
-        struct ggml_tensor  * scale) {
-    const int64_t ne[4] = { a->ne[1], b->ne[1], b->ne[2], b->ne[3] };
-    struct ggml_tensor * result = ggml_new_tensor(ctx, GGML_TYPE_F32, 4, ne);
-
-    result->op   = GGML_OP_BITNET_MUL_MAT;
-    result->grad = NULL;
-    result->src[0] = a;
-    result->src[1] = b;
-    result->src[2] = scale;
-
-    return result;
-    }
-
-// ggml_bitlinear_quant for bitnet
-
-struct ggml_tensor * ggml_bitlinear_quant(
-        struct ggml_context * ctx,
-        struct ggml_tensor * a) {
-    bool is_node = false;
-
-    if (a->grad) {
-        GGML_ASSERT(false); // TODO: implement
-        is_node = true;
-    }
-
-    int64_t ne[GGML_MAX_DIMS] = { a->ne[0], a->ne[1], a->ne[2], a->ne[3] };
-    struct ggml_tensor * result = ggml_new_tensor(ctx, GGML_TYPE_F32, ggml_n_dims(a), ne);
-
-    result->op   = GGML_OP_BITLINEAR_QUANT;
-    result->grad = is_node ? ggml_dup_tensor(ctx, result) : NULL;
-    result->src[0] = a;
-
-    return result;
-}
-
-// ggml_argmax
 
 struct ggml_tensor * ggml_argmax(
         struct ggml_context * ctx,
@@ -9504,75 +9456,6 @@ static void ggml_compute_forward_mean(
     }
 }
 
-static void ggml_compute_forward_bitlinear_quant_f32(
-        const struct ggml_compute_params * params,
-        const struct ggml_tensor * src0,
-        struct ggml_tensor * dst) {
-    assert(params->ith == 0);
-
-    if (params->type == GGML_TASK_TYPE_INIT || params->type == GGML_TASK_TYPE_FINALIZE) {
-        return;
-    }
-
-    // printf("begin quant\n");
-    // printf("%s\n", src0->name);
-    // printf("%.4f\n", *(float*) ((uint8_t *)(src0->data)) + 0);
-    // printf("%.4f\n", *(float*) ((uint8_t *)(src0->data)) + 1);
-    // printf("%.4f\n", *(float*) ((uint8_t *)(src0->data)) + 2);
-    // printf("%.4f\n", *(float*) ((uint8_t *)(src0->data)) + 3);
-
-    assert(src0->nb[0] == sizeof(float));
-
-    GGML_TENSOR_UNARY_OP_LOCALS
-
-    assert(ne0 == ne00);
-    assert(ne1 == ne01);
-    assert(ne2 == ne02);
-    assert(ne3 == ne03);
-
-    UNUSED(ne0);
-    UNUSED(ne1);
-    UNUSED(ne2);
-    UNUSED(ne3);
-
-    for (int64_t i03 = 0; i03 < ne03; i03++) {
-        for (int64_t i02 = 0; i02 < ne02; i02++) {
-            for (int64_t i01 = 0; i01 < ne01; i01++) {
-                float rowmax = 0.00001;
-                ggml_vec_absmaxclamp_f32(ne00, &rowmax, (float *) ((char *) src0->data + i01*nb01 + i02*nb02 + i03*nb03), 0.00001);
-                float s = 127 / rowmax;
-
-                ggml_vec_scaleroundclamp_f32(ne00,
-                        (float *) ((char *)  dst->data + i01*nb1  + i02*nb2  + i03*nb3),
-                        (float *) ((char *) src0->data + i01*nb01 + i02*nb02 + i03*nb03),
-                        s, -128, 127);
-            }
-        }
-    }
-    // printf("after quant\n");
-    // printf("%s\n", dst->name);
-    // printf("%.4f\n", *(float*) ((uint8_t *)(dst->data)) + 0);
-    // printf("%.4f\n", *(float*) ((uint8_t *)(dst->data)) + 1);
-    // printf("%.4f\n", *(float*) ((uint8_t *)(dst->data)) + 2);
-    // printf("%.4f\n", *(float*) ((uint8_t *)(dst->data)) + 3);
-}
-
-static void ggml_compute_forward_bitlinear_quant(
-        const struct ggml_compute_params * params,
-        const struct ggml_tensor * src0,
-        struct ggml_tensor * dst) {
-    switch (src0->type) {
-        case GGML_TYPE_F32:
-            {
-                ggml_compute_forward_bitlinear_quant_f32(params, src0, dst);
-            } break;
-        default:
-            {
-                GGML_ASSERT(false);
-            } break;
-    }
-}
-
 // ggml_compute_forward_argmax
 
 static void ggml_compute_forward_argmax_f32(
@@ -11062,152 +10945,6 @@ static bool ggml_compute_forward_mul_mat_use_blas(struct ggml_tensor * dst) {
     return false;
 }
 #endif
-
-static void ggml_compute_forward_bitnet_mul_mat(
-        const struct ggml_compute_params * params,
-              struct ggml_tensor * dst) {
-
-    const struct ggml_tensor * src0 = dst->src[0];
-    const struct ggml_tensor * src1 = dst->src[1];
-    const struct ggml_tensor * src2 = dst->src[2];
-
-    // printf("begin mul mat\n");
-    // printf("%s\n", src0->name);
-    // printf("%s\n", src1->name);
-    // printf("%s\n", src2->name);
-
-    // uint8_t *i_weight = (uint8_t*) (src0->data);
-    // q_weight 3200 * 800 (uint8) -> 3200 * 3200 (uint2) 
-    // printf("%d\n", i_weight[0]);
-    // printf("%d\n", i_weight[1]);
-    // printf("%d\n", i_weight[2]);
-    // printf("%d\n", i_weight[3]);
-    // printf("%d\n", i_weight[4]);
-    // printf("%d\n", i_weight[5]);
-    // printf("%d\n", i_weight[3200*800-1]);
-    // printf("%d\n", i_weight[3200*800-2]);
-    // printf("%d\n", i_weight[3200*800-3]);
-    // printf("%d\n", i_weight[3200*800-4]);
-    // float f_inp = (float) *(uint8_t *)(src1->data) + 0;
-    // printf("%.4f\n", *(float*) ((uint8_t *)(src1->data)) + 0);
-    // printf("%.4f\n", *(float*) ((uint8_t *)(src1->data)) + 1);
-    // printf("%.4f\n", *(float*) ((uint8_t *)(src1->data)) + 2);
-    // printf("%.4f\n", *(float*) ((uint8_t *)(src1->data)) + 3);
-    // printf("%.4f\n", *(float*) ((uint8_t *)(src2->data)) + 0);
-    
-    int64_t t0 = ggml_perf_time_us();
-    UNUSED(t0);
-
-    GGML_TENSOR_BINARY_OP_LOCALS
-
-    const int ith = params->ith;
-    const int nth = params->nth;
-
-    const enum ggml_type type = src0->type;
-    // printf("%d\n", src0->type);
-    // printf("%d\n", src1->type);
-
-    const bool src1_cont = ggml_is_contiguous(src1);
-
-    // printf("%d\n", ggml_is_contiguous(src0));
-    // printf("%d\n", ggml_is_contiguous(src1));
-    // float* f_dst = (float*) ((char *) dst->data);
-    // f_dst[1] = 1.1f;
-    // f_dst[2] = 2.2f;
-    // printf("dst[0]:%f\n",(float*)((uint8_t *) dst->data))[0]);
-    // printf("dst[1]:%f\n",((float*) ((char *) dst->data))[1]);
-    // printf("%s\n", dst->name);
-    // printf("%d\n", dst->type);
-    GGML_ASSERT(ne0 == ne01);
-    GGML_ASSERT(ne1 == ne11);
-    GGML_ASSERT(ne2 == ne12);
-    GGML_ASSERT(ne3 == ne13);
-
-    // we don't support permuted src0 or src1
-    GGML_ASSERT(nb00 == ggml_type_size(type));
-    GGML_ASSERT(nb10 == ggml_type_size(src1->type));
-
-    // dst cannot be transposed or permuted
-    GGML_ASSERT(nb0 == sizeof(float));
-    GGML_ASSERT(nb0 <= nb1);
-    GGML_ASSERT(nb1 <= nb2);
-    GGML_ASSERT(nb2 <= nb3);
-
-    // broadcast factors
-    const int64_t r2 = ne12/ne02;
-    const int64_t r3 = ne13/ne03;
-    int vec_dot_type = GGML_TYPE_Q8_0;
-    // nb01 >= nb00 - src0 is not transposed
-    //   compute by src0 rows
-
-    if (params->type == GGML_TASK_TYPE_INIT) {
-        // printf("ne03:%ld\n", ne03);
-        // printf("ne02:%ld\n", ne02);
-        // printf("ne01:%ld\n", ne01);
-        // printf("ne00:%ld\n", ne00);
-        // printf("ne13:%ld\n", ne13);
-        // printf("ne12:%ld\n", ne12);
-        // printf("ne11:%ld\n", ne11);
-        // printf("ne10:%ld\n", ne10);
-        if (ith != 0) {
-            return;
-        }
-
-        char * wdata = params->wdata;
-        const size_t row_size = ggml_row_size(GGML_TYPE_Q8_0, ne00);
-        // printf("row_size:%ld\n", row_size);
-
-        assert(params->wsize >= ne11*ne12*ne13*row_size);
-        GGML_ASSERT(src1->type == GGML_TYPE_F32);
-
-        for (int64_t i13 = 0; i13 < ne13; ++i13) {
-            for (int64_t i12 = 0; i12 < ne12; ++i12) {
-                for (int64_t i11 = 0; i11 < ne11; ++i11) {
-                    quantize_row_q8_0((float *)((char *) src1->data + i13*nb13 + i12*nb12 + i11*nb11), (void *) wdata, ne00);
-                        wdata += row_size;
-                }
-            }
-        }
-    }
-
-    if (params->type == GGML_TASK_TYPE_FINALIZE) {
-        return;
-    }
-
-
-    const void * wdata = params->wdata;
-    const size_t row_size = ggml_row_size(vec_dot_type, ne00);
-
-    // printf("ne03:%ld\n", ne03);
-    // printf("ne02:%ld\n", ne02);
-    // printf("ne01:%ld\n", ne01);
-    // printf("ne00:%ld\n", ne00);
-
-    // printf("nb0:%ld\n", nb0);
-    // printf("nb1:%ld\n", nb1);
-    float scale = *(float*) ((uint8_t *)(src2->data));
-    // printf("scale:%f\n", scale);
-    for (int64_t i03 = 0; i03 < ne03; i03++) {
-        for (int64_t i02 = 0; i02 < ne02; i02++) {
-            for (int64_t i01 = 0; i01 < ne01; i01++) {
-                float * dst_col = (float *) ((char *) dst->data + (i01 + i02*ne02 + i03*ne03) * nb0);
-                float * inp_row = (const char *) wdata;
-                uint8_t * weight_col = (uint8_t *) ((char *) src0->data + (i01*ne00 + i02*ne02 + i03*ne03) / 4);
-                ggml_vec_dot_i2_q80(ne00, dst_col, inp_row, weight_col);
-            }
-        }
-    }
-
-    for (int64_t i03 = 0; i03 < ne03; i03++) {
-        for (int64_t i02 = 0; i02 < ne02; i02++) {
-            float * dst_row = (float *) ((char *) dst->data);
-            ggml_vec_mul_f32_bitnet(ne01, dst_row + i02*ne02 + i03*ne03, scale);
-        }
-    }
-
-}
-
-
 
 static void ggml_compute_forward_mul_mat(
         const struct ggml_compute_params * params,
@@ -17016,14 +16753,6 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
             {
                 ggml_compute_forward_mean(params, tensor);
             } break;
-        case GGML_OP_BITLINEAR_QUANT:
-            {
-                ggml_compute_forward_bitlinear_quant(params, tensor->src[0], tensor);
-            } break;
-        case GGML_OP_BITNET_MUL_MAT:
-            {
-                ggml_compute_forward_bitnet_mul_mat(params, tensor);
-            } break;
         case GGML_OP_ARGMAX:
             {
                 ggml_compute_forward_argmax(params, tensor);
@@ -17739,8 +17468,6 @@ static void ggml_compute_backward(struct ggml_context * ctx, struct ggml_tensor 
                 }
             } break;
         case GGML_OP_MEAN:
-        case GGML_OP_BITLINEAR_QUANT:
-        case GGML_OP_BITNET_MUL_MAT:
         case GGML_OP_ARGMAX:
             {
                 GGML_ASSERT(false); // TODO: implement
@@ -18851,8 +18578,6 @@ static int ggml_get_n_tasks(struct ggml_tensor * node, int n_threads, int n_cur_
         case GGML_OP_SUM:
         case GGML_OP_SUM_ROWS:
         case GGML_OP_MEAN:
-        case GGML_OP_BITLINEAR_QUANT:
-        case GGML_OP_BITNET_MUL_MAT:
         case GGML_OP_ARGMAX:
         case GGML_OP_REPEAT:
         case GGML_OP_REPEAT_BACK:
@@ -19236,7 +18961,7 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
             //       since it is not clear what is the best approach, it should potentially become user-configurable
             //       ref: https://github.com/ggerganov/ggml/issues/291
             // UPD:  adding the do_yield flag seems to resolve the issue universally
-            const bool do_yield = node_n < 0 || cgraph->nodes[node_n]->op == GGML_OP_MUL_MAT || cgraph->nodes[node_n]->op == GGML_OP_BITNET_MUL_MAT;
+            const bool do_yield = node_n < 0 || cgraph->nodes[node_n]->op == GGML_OP_MUL_MAT;
             ggml_graph_compute_thread_sync_task(&task_phase, state, do_yield);
         }
 
@@ -19326,13 +19051,6 @@ struct ggml_cplan ggml_graph_plan(const struct ggml_cgraph * cgraph, int n_threa
                         cur = ggml_tmac_mul_mat_get_wsize(node->src[0], node->src[1], node);
                     } else
 #endif
-                    if (node->src[1]->type != vec_dot_type) {
-                        cur = ggml_row_size(vec_dot_type, ggml_nelements(node->src[1]));
-                    }
-                } break;
-            case GGML_OP_BITNET_MUL_MAT:
-                {
-                    const enum ggml_type vec_dot_type = type_traits[node->src[0]->type].vec_dot_type;
                     if (node->src[1]->type != vec_dot_type) {
                         cur = ggml_row_size(vec_dot_type, ggml_nelements(node->src[1]));
                     }

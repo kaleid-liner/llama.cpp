@@ -477,13 +477,6 @@ enum llm_tensor {
     LLM_TENSOR_SSM_OUT,
     LLM_TENSOR_ATTN_SUB_NORM,
     LLM_TENSOR_FFN_SUB_NORM,
-    LLM_TENSOR_ATTN_Q_SCALE,
-    LLM_TENSOR_ATTN_K_SCALE,
-    LLM_TENSOR_ATTN_V_SCALE,
-    LLM_TENSOR_ATTN_O_SCALE,
-    LLM_TENSOR_FFN_UP_SCALE,
-    LLM_TENSOR_FFN_DOWN_SCALE,
-    LLM_TENSOR_FFN_GATE_SCALE,
 };
 
 static const std::map<llm_arch, std::map<llm_tensor, std::string>> LLM_TENSOR_NAMES = {
@@ -757,13 +750,6 @@ static const std::map<llm_arch, std::map<llm_tensor, std::string>> LLM_TENSOR_NA
             { LLM_TENSOR_FFN_UP,          "blk.%d.ffn_up" },
             { LLM_TENSOR_FFN_NORM,        "blk.%d.ffn_norm" },
             { LLM_TENSOR_FFN_SUB_NORM,    "blk.%d.ffn_sub_norm" },
-            { LLM_TENSOR_ATTN_Q_SCALE,    "blk.%d.attn_q_scale" },
-            { LLM_TENSOR_ATTN_K_SCALE,    "blk.%d.attn_k_scale" },
-            { LLM_TENSOR_ATTN_V_SCALE,    "blk.%d.attn_v_scale" },
-            { LLM_TENSOR_ATTN_O_SCALE,    "blk.%d.attn_output_scale" },
-            { LLM_TENSOR_FFN_UP_SCALE,    "blk.%d.ffn_up_scale" },
-            { LLM_TENSOR_FFN_DOWN_SCALE,  "blk.%d.ffn_down_scale" },
-            { LLM_TENSOR_FFN_GATE_SCALE,  "blk.%d.ffn_gate_scale" },
         },
     },
     {
@@ -8879,14 +8865,14 @@ struct llm_build_context {
 
                 Qcur = ggml_rope_custom(
                     ctx0, ggml_reshape_3d(ctx0, Qcur, n_embd_head, n_head,    n_tokens), inp_pos,
-                    n_embd_head, 0, 0, n_orig_ctx, freq_base, freq_scale,
+                    n_embd_head, rope_type, 0, n_orig_ctx, freq_base, freq_scale,
                     ext_factor, attn_factor, beta_fast, beta_slow
                 );
                 cb(Qcur, "Qcur", il);
 
                 Kcur = ggml_rope_custom(
                     ctx0, ggml_reshape_3d(ctx0, Kcur, n_embd_head, n_head_kv, n_tokens), inp_pos,
-                    n_embd_head, 0, 0, n_orig_ctx, freq_base, freq_scale,
+                    n_embd_head, rope_type, 0, n_orig_ctx, freq_base, freq_scale,
                     ext_factor, attn_factor, beta_fast, beta_slow
                 );
                 cb(Kcur, "Kcur", il);

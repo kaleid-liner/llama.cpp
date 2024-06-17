@@ -135,9 +135,15 @@ bool ggml_tmac_can_mul_mat(const struct ggml_tensor * src0, const struct ggml_te
     if ((is_type_supported(src0->type)) &&
         src1->type == GGML_TYPE_F32 &&
         dst->type == GGML_TYPE_F32 &&
-        src0->backend == GGML_BACKEND_TYPE_CPU &&
-        src1->ne[1] == 1) {
-        return true;
+        src0->backend == GGML_BACKEND_TYPE_CPU) {
+        if (src1->ne[1] <= 1) {
+            return true;
+        } else {
+            if (!do_permutate(src0->type)) {
+                LOG(FATAL) << "ne11=" << src1->ne[1] << ", please set '-b 1' before T-MAC support batch size > 1";
+            }
+            return false;
+        }
     }
     return false;
 }
