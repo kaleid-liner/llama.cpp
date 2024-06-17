@@ -4061,8 +4061,7 @@ static void llm_load_hparams(
                 ml.get_key(LLM_KV_ATTENTION_LAYERNORM_RMS_EPS, hparams.f_norm_rms_eps);
 
                 switch (hparams.n_layer) {
-                    case 32: model.type = e_model::MODEL_7B; break;
-                    case 40: model.type = e_model::MODEL_13B; break;
+                    case 26: model.type = e_model::MODEL_3B; break;
                     default: model.type = e_model::MODEL_UNKNOWN;
                 }
             } break;
@@ -5422,8 +5421,7 @@ static bool llm_load_tensors(
                 } break;
             case LLM_ARCH_BITNET:
                 {
-                    int bitnet_n_vocab = 100287;
-                    model.tok_embd = ml.create_tensor(ctx_input, tn(LLM_TENSOR_TOKEN_EMBD, "weight"), {n_embd, bitnet_n_vocab});
+                    model.tok_embd = ml.create_tensor(ctx_input, tn(LLM_TENSOR_TOKEN_EMBD, "weight"), {n_embd, n_vocab});
 
                     // output
                     {
@@ -14479,10 +14477,7 @@ static ggml_type llama_tensor_get_type(quantize_state_internal & qs, ggml_type n
             new_type = qs.params->output_tensor_type;
         } else {
             int nx = tensor->ne[0];
-            if (arch == LLM_ARCH_BITNET) {
-                new_type = GGML_TYPE_Q4_1;
-            }
-            else if (arch == LLM_ARCH_FALCON || nx % QK_K != 0) {
+            if (arch == LLM_ARCH_FALCON || nx % QK_K != 0) {
                 new_type = GGML_TYPE_Q8_0;
             }
             else if (ftype == LLAMA_FTYPE_MOSTLY_IQ2_XXS || ftype == LLAMA_FTYPE_MOSTLY_IQ2_XS || ftype == LLAMA_FTYPE_MOSTLY_IQ3_XXS ||
