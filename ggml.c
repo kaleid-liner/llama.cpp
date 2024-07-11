@@ -516,7 +516,7 @@ static void ggml_vec_dot_f16(int n, float * restrict s, size_t bs, ggml_fp16_t *
 static const ggml_type_traits_t type_traits[GGML_TYPE_COUNT] = {
     [GGML_TYPE_I2] = {
         .type_name                = "i2",
-        .blck_size                = 1,
+        .blck_size                = 4,
         .type_size                = sizeof(int8_t),
         .is_quantized             = false,
         .vec_dot                  = (ggml_vec_dot_t) ggml_vec_dot_f32,
@@ -2591,17 +2591,10 @@ GGML_CALL size_t ggml_nbytes(const struct ggml_tensor * tensor) {
     size_t nbytes;
     size_t blck_size = ggml_blck_size(tensor->type);
     if (blck_size == 1) {
-        // printf("get type:%d\n", tensor->type);
         nbytes = ggml_type_size(tensor->type);
-        // printf("get type nbyte:%d\n", nbytes);
         for (int i = 0; i < GGML_MAX_DIMS; ++i) {
             nbytes += (tensor->ne[i] - 1)*tensor->nb[i];
         }
-
-        if(tensor->type == 30){
-            nbytes = nbytes / 4 + 32;
-        }
-        // printf("get type nbyte2:%d\n", nbytes);
     }
     else {
         nbytes = tensor->ne[0]*tensor->nb[0]/blck_size;
@@ -2609,6 +2602,11 @@ GGML_CALL size_t ggml_nbytes(const struct ggml_tensor * tensor) {
             nbytes += (tensor->ne[i] - 1)*tensor->nb[i];
         }
     }
+#if defined(GGML_USE_TMAC)
+    if(tensor->type == GGML_TYPE_I2){
+        nbytes = ggml_tmac_get_nbytes(tensor);
+    }
+#endif
 
     return nbytes;
 }

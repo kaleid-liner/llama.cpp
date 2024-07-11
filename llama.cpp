@@ -3221,7 +3221,7 @@ struct llama_model_loader {
                 case GGML_TYPE_IQ4_NL:  ftype = LLAMA_FTYPE_MOSTLY_IQ4_NL;  break;
                 case GGML_TYPE_IQ4_XS:  ftype = LLAMA_FTYPE_MOSTLY_IQ4_XS;  break;
                 case GGML_TYPE_IQ3_S:   ftype = LLAMA_FTYPE_MOSTLY_IQ3_S;   break;
-                case GGML_TYPE_I2   :   ftype = LLAMA_FTYPE_MOSTLY_I2    ;   break;
+                case GGML_TYPE_I2   :   ftype = LLAMA_FTYPE_MOSTLY_I2   ;   break;
                 default:
                     {
                         LLAMA_LOG_WARN("%s: unknown type %s\n", __func__, ggml_type_name(type_max));
@@ -15044,7 +15044,7 @@ static void llama_model_quantize_internal(const std::string & fname_inp, const s
             if (params->output_tensor_type < GGML_TYPE_COUNT && strcmp(tensor->name, "output.weight") == 0) {
                 new_type = params->output_tensor_type;
             }
-            if (tensor->type == 30) {
+            if (tensor->type == GGML_TYPE_I2) {
                 // no need quantize for i2
                 new_type = tensor->type;
             }
