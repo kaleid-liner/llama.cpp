@@ -13,7 +13,7 @@ from abc import ABC, abstractmethod
 from enum import IntEnum
 from pathlib import Path
 from hashlib import sha256
-from typing import TYPE_CHECKING, Any, Callable, ContextManager, Iterator, Sequence, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Callable, ContextManager, Iterator, Sequence, TypeVar, cast, Optional, Tuple
 import configparser
 
 import numpy as np
@@ -40,6 +40,12 @@ class SentencePieceTokenTypes(IntEnum):
     USER_DEFINED = 4
     UNUSED = 5
     BYTE = 6
+
+
+class LlamaFType(IntEnum):
+    F32 = 0
+    MOSTLY_F16 = 1
+    MOSTLY_I2 = 32
 
 
 AnyModel = TypeVar("AnyModel", bound="type[Model]")
@@ -211,8 +217,9 @@ class Model(ABC):
     @staticmethod
     def count_model_parts(dir_model: Path, prefix: str) -> int:
         num_parts = 0
+        not_included = ["training_args.bin"]
         for filename in os.listdir(dir_model):
-            if filename.endswith(prefix):
+            if filename.endswith(prefix) and filename not in not_included:
                 num_parts += 1
 
         return num_parts
@@ -1394,6 +1401,50 @@ class StableLMModel(Model):
             self.gguf_writer.add_tensor(new_name, data)
 
 
+# Modified version of BitDistiller pseudo_quantize_tensor
+# core quantization method (simulated quantization)
+def real_quantize_tensor(w, n_bit=8, zero_point=True, q_group_size=-1):
+    org_w_shape = w.shape
+    if q_group_size > 0:
+        assert org_w_shape[-1] % q_group_size == 0
+        w = w.reshape(-1, q_group_size)
+    elif q_group_size == -1:
+        w = w.reshape(-1, w.shape[-1])
+    assert w.dim() == 2
+    if zero_point:
+        max_val = w.amax(dim=1, keepdim=True)
+        min_val = w.amin(dim=1, keepdim=True)
+        max_int = 2 ** n_bit - 1
+        min_int = 0
+        scales = (max_val - min_val).clamp(min=1e-5) / max_int
+        zeros = (-torch.round(min_val / scales)).clamp_(min_int, max_int)
+    else:  # we actually never used this
+        assert min_val is None
+        max_val = w.abs().amax(dim=1, keepdim=True)
+        max_val = max_val.clamp(min=1e-5)
+        max_int = 2 ** (n_bit - 1) - 1
+        min_int = - 2 ** (n_bit - 1)
+        scales = max_val / max_int
+        zeros = 0
+
+    assert torch.isnan(scales).sum() == 0
+    assert torch.isnan(w).sum() == 0
+
+    w = torch.clamp(torch.round(w / scales) + zeros, min_int, max_int)
+
+    w = w.reshape(org_w_shape).numpy()
+    scales = scales.numpy().reshape(w.shape[0], -1)
+    zeros = zeros.numpy().reshape(w.shape[0], -1) if zero_point else None
+
+    if zero_point:
+        w = w.astype(np.uint8)
+        zeros = (zeros - (2 ** (n_bit - 1))) * scales
+        return w, scales, zeros
+    else:
+        w = (w - min_int).astype(np.uint8)
+        return w, scales, zeros
+
+
 @Model.register("LlamaForCausalLM", "MistralForCausalLM", "MixtralForCausalLM")
 class LlamaModel(Model):
     model_arch = gguf.MODEL_ARCH.LLAMA
@@ -1450,7 +1501,14 @@ class LlamaModel(Model):
             if data_torch.dtype not in (torch.float16, torch.float32):
                 data_torch = data_torch.to(torch.float32)
 
+            bid = None
+            for part in name.split("."):
+                if part.isdecimal():
+                    bid = int(part)
+                    break
+
             data = data_torch.numpy()
+            data_shape = data.shape
 
             if name.endswith("q_proj.weight"):
                 data = permute(data, n_head, n_head)
@@ -1484,10 +1542,10 @@ class LlamaModel(Model):
                             data = np.stack(datas, axis=0)
                             data_dtype = data.dtype
 
-                            if self.ftype == 0 and data_dtype == np.float16:
+                            if self.ftype == LlamaFType.F32 and data_dtype == np.float16:
                                 data = data.astype(np.float32)
 
-                            if self.ftype == 1 and data_dtype == np.float32:
+                            if self.ftype == LlamaFType.MOSTLY_F16 and data_dtype == np.float32:
                                 data = data.astype(np.float16)
 
                             merged_name = f"layers.{bid}.feed_forward.experts.w{wid}.weight"
@@ -1509,21 +1567,51 @@ class LlamaModel(Model):
             n_dims = len(data.shape)
             data_dtype = data.dtype
 
-            # if f32 desired, convert any float16 to float32
-            if self.ftype == 0 and data_dtype == np.float16:
-                data = data.astype(np.float32)
-
-            # 1d tensors need to be converted to float32
-            if self.ftype == 1 and data_dtype == np.float16 and n_dims == 1:
-                data = data.astype(np.float32)
+            extra_f32 = any(self.match_model_tensor_name(new_name, key, bid) for key in (
+                gguf.MODEL_TENSOR.FFN_GATE_INP,
+                gguf.MODEL_TENSOR.POS_EMBD,
+                gguf.MODEL_TENSOR.TOKEN_TYPES,
+            ))
 
             # if f16 desired, convert any float32 2-dim weight tensors to float16
-            if self.ftype == 1 and data_dtype == np.float32 and name.endswith(".weight") and n_dims == 2:
+            extra_f16 = any(cond for cond in (
+                (name.endswith(".weight") and n_dims >= 2),
+            ))
+
+            to_dtype = gguf.GGMLQuantizationType.F32
+
+            if self.ftype != LlamaFType.F32 and extra_f16 and not extra_f32:
+                if self.ftype == LlamaFType.MOSTLY_I2 and any(self.match_model_tensor_name(new_name, key, bid) for key in [
+                    gguf.MODEL_TENSOR.ATTN_Q,
+                    gguf.MODEL_TENSOR.ATTN_K,
+                    gguf.MODEL_TENSOR.ATTN_V,
+                    gguf.MODEL_TENSOR.ATTN_OUT,
+                    gguf.MODEL_TENSOR.FFN_UP,
+                    gguf.MODEL_TENSOR.FFN_DOWN,
+                    gguf.MODEL_TENSOR.FFN_GATE,
+                ]):
+                    to_dtype = gguf.GGMLQuantizationType.I2
+                else:
+                    to_dtype = gguf.GGMLQuantizationType.F16
+
+            scales = None
+            if to_dtype == gguf.GGMLQuantizationType.F32:
+                data = data.astype(np.float32)
+            elif to_dtype == gguf.GGMLQuantizationType.F16:
                 data = data.astype(np.float16)
+            elif to_dtype == gguf.GGMLQuantizationType.I2:
+                bits = 2
+                w, scales, zeros = real_quantize_tensor(
+                    data_torch,
+                    n_bit=bits,
+                    zero_point=True,
+                    q_group_size=args.group_size,
+                )
+                data = preprocess_for_t_mac(w, scales, zeros, bits=bits)
 
-            logger.info(f"{new_name}, n_dims = {n_dims}, {old_dtype} --> {data.dtype}")
+            logger.info(f"{new_name}, n_dims = {n_dims}, {old_dtype} --> {to_dtype.name}")
 
-            self.gguf_writer.add_tensor(new_name, data)
+            self.gguf_writer.add_tensor(new_name, data, raw_shape=data_shape, raw_dtype=to_dtype)
 
         if len(experts) > 0:
             raise ValueError(f"Unprocessed experts: {experts.keys()}")
@@ -1586,10 +1674,10 @@ class GrokModel(Model):
                             data = np.stack(datas, axis=0)
                             data_dtype = data.dtype
 
-                            if self.ftype == 0 and data_dtype == np.float16:
+                            if self.ftype == LlamaFType.F32 and data_dtype == np.float16:
                                 data = data.astype(np.float32)
 
-                            if self.ftype == 1 and data_dtype == np.float32:
+                            if self.ftype == LlamaFType.MOSTLY_F16 and data_dtype == np.float32:
                                 data = data.astype(np.float16)
 
                             merged_name = f"transformer.decoder_layer.{bid}.moe.{wid}.weight"
@@ -2903,14 +2991,16 @@ class OlmoModel(Model):
             self.gguf_writer.add_tensor(new_name, data)
 
 
-# based on t_mac.utils.preprocess_weights
-def preprocess_weights(
+def preprocess_for_t_mac(
     w: np.ndarray,
+    scales: np.ndarray,
+    zeros: Optional[np.ndarray] = None,
     bits = 2,
     g    = 4,
-) -> Tuple[np.ndarray, np.ndarray]:
-    M, K = w.shape
+) -> np.ndarray:
+    from t_mac.weights import preprocess_weights
 
+    M, K = w.shape
     cf = configparser.ConfigParser()
     cf.read(args.kcfg)
     secs = cf.sections()
@@ -2926,31 +3016,10 @@ def preprocess_weights(
             break
 
     if not found:
-        logger.error("GEMM of shape ({}, {}) is not found in {}. Please compile the kernels using T-MAC first.".format(M, K, args.kcfg))
-
-    M = M * bits
-    ngroups_per_elem = 8 // g
-
-    # (M // bits, K, bits)
-    w = np.stack([(w >> ib) & 1 for ib in range(bits)], axis=-1)
-    # (M // bits, K, bits) -> (M // bits, bits, K) -> (M // bits, bits, K) -> (M // bits, bits, K // g, g)
-    w = w.transpose(0, 2, 1).reshape(M // bits, bits, K // g, g)
-    w = sum([(w[:, :, :, ig] << ig) for ig in range(g)])
-    # 0, 16, 1, 17, 2, 18, 3, 19, 4, 20, 5, 21, 6, 22, 7, 23, 8, 24, 9, 25, 10, 26, 11, 27, 12, 28, 13, 29, 14, 30, 15, 31
-    # for bits=3
-    # bit0: [0, 8), bit1: [8, 16), bit2: [16, 24), bit0: [24, 32)
-    # (M // bits // simd_n_float16, bits, simd_n_float16, K // g)
-    w = w.reshape(M // bits // simd_n_out, simd_n_out, bits, K // g).transpose(0, 2, 1, 3)
-    mgroup = ngroups_per_elem * simd_n_in
-    w = w.reshape(M // mgroup, ngroups_per_elem, simd_n_in, K // g).transpose(0, 2, 1, 3)
-    #             0        1             2             3                 4                  5
-    w = w.reshape(M // bm, bm // mgroup, simd_n_in, ngroups_per_elem, K // g // kfactor, kfactor).transpose(0, 4, 1, 5, 2, 3)
-    w = sum([(w[:, :, :, :, :, ng] << (ng * g)) for ng in range(ngroups_per_elem)])
-    w = w.reshape(M // bm, K // g // kfactor, bm // mgroup, kfactor, simd_n_in)
-    # input size of current TVM API
-    w = w.reshape(M // bm, K // g, bm // ngroups_per_elem)
-
-    return w
+        raise KeyError("GEMM of shape ({}, {}) is not found in {}. Please compile the kernels using T-MAC first.".format(M, K, args.kcfg))
+    
+    w, scales = preprocess_weights(w, scales, zeros, bits=bits, g=g, bm=bm, kfactor=kfactor, simd_n_in=simd_n_in, simd_n_out=simd_n_out)
+    return np.concatenate([w.flatten(), scales.astype(np.float32).view(np.uint8).flatten()])
     
 
 @Model.register("BitnetForCausalLM")
@@ -2978,8 +3047,8 @@ class BitnetModel(Model):
     def transform_to_i2(self, x: np.ndarray):
         scale = np.max(np.abs(x))
         res = np.round(x / scale + 2).astype(np.uint8)
-        res = preprocess_weights(res)
-        return res, scale
+        res = preprocess_for_t_mac(res, scale.reshape(1))
+        return res
 
     def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
         # quant weight to i2 (in fp16)
@@ -3049,12 +3118,10 @@ class BitnetModel(Model):
                 if name.endswith('embed_tokens.weight') or name.endswith('norm.weight'):
                     suit_i2 = False
 
-                i2_scale = None
-                if self.ftype != gguf.GGMLQuantizationType.F32 and extra_f16 and not extra_f32:
-                    if self.ftype == gguf.GGMLQuantizationType.I2 and suit_i2:
-                        data, i2_scale = self.transform_to_i2(data)
+                if self.ftype != LlamaFType.F32 and extra_f16 and not extra_f32:
+                    if self.ftype == LlamaFType.MOSTLY_I2 and suit_i2:
+                        data = self.transform_to_i2(data)
                         assert data.dtype == np.uint8
-                        assert i2_scale.dtype == np.float32
                         data_qtype = gguf.GGMLQuantizationType.I2
 
                     else:  # default to float16 for quantized tensors
@@ -3076,8 +3143,6 @@ class BitnetModel(Model):
                 logger.info(f"{f'%-{max_name_len}s' % f'{new_name},'} {old_dtype} --> {data_qtype.name}, shape = {shape_str}")
 
                 self.gguf_writer.add_tensor(new_name, data, raw_shape=shape, raw_dtype=data_qtype)
-                if i2_scale is not None:
-                    self.gguf_writer.add_tensor(new_name + "_scale", i2_scale, raw_dtype=gguf.GGMLQuantizationType.F32)
 
 
 ###### CONVERSION LOGIC ######
@@ -3110,6 +3175,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model-name", type=str, default=None, help="name of the model")
     parser.add_argument("--verbose", action="store_true", help="increase output verbosity")
     parser.add_argument("--kcfg", type=str, default="", help="Path to T-MAC kcfg.ini")
+    parser.add_argument("--quant-type", type=str, default="bitnet", choices=["bitnet", "bitdistiller"])
+    parser.add_argument("--group-size", type=int, default=128)
 
     return parser.parse_args()
 
@@ -3137,9 +3204,9 @@ def main() -> None:
         sys.exit(1)
 
     ftype_map = {
-        "f32": gguf.GGMLQuantizationType.F32,
-        "f16": gguf.GGMLQuantizationType.F16,
-        "i2" : gguf.GGMLQuantizationType.I2,
+        "f32": LlamaFType.F32,
+        "f16": LlamaFType.MOSTLY_F16, 
+        "i2" : LlamaFType.MOSTLY_I2,
     }
 
     if args.outfile is not None:

@@ -35,6 +35,7 @@ GGML_API void ggml_tmac_mul_mat_task_compute(void * src0, void * scales, void * 
 GGML_API void ggml_tmac_transform_tensor(struct ggml_tensor * tensor);
 GGML_API int ggml_tmac_get_type_bits(enum ggml_type type);
 GGML_API void ggml_tmac_set_n_threads(int n_threads);
+GGML_API size_t ggml_tmac_get_nbytes(const struct ggml_tensor * tensor);
 
 #ifdef  __cplusplus
 }

@@ -176,6 +176,18 @@ void ggml_tmac_mul_mat_task_compute(void * src0, void * scales, void * qlut, voi
     wrapper->llama_cpp_compute(src0, scales, qlut, lut_scales, lut_biases, dst, n, k, m, bits);
 }
 
+size_t ggml_tmac_get_nbytes(const struct ggml_tensor * tensor) {
+    const int bits = ggml_tmac_get_type_bits(tensor->type);
+
+    int k = tensor->ne[0];
+    int m = tensor->ne[1];  // `n` in llama.cpp
+
+    TMAC::TMACGeMMConfig kcfg = wrapper->get_kcfg(m, k, 1, bits);
+    // Currently, I2 always uses float to store scales or zero points
+    size_t nbytes = k * m / 8 * bits + kcfg.scales_size * sizeof(float);
+    return nbytes;
+}
+
 void ggml_tmac_transform_tensor(struct ggml_tensor * tensor) {
     if (!(is_type_supported(tensor->type) && tensor->backend == GGML_BACKEND_TYPE_CPU && tensor->extra == nullptr)) {
         return;
