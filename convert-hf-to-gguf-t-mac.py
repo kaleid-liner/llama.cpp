@@ -336,12 +336,51 @@ class Model(ABC):
         if chkhsh == "3ce83efda5659b07b1ad37ca97ca5797ea4285d9b9ab0dc679e4a720c9da7454":
             # ref: https://huggingface.co/openai-community/gpt2
             res = "gpt-2"
+        if chkhsh == "32d85c31273f8019248f2559fed492d929ea28b17e51d81d3bb36fff23ca72b3":
+            # ref: https://huggingface.co/stabilityai/stablelm-2-zephyr-1_6b
+            res = "stablelm2"
         if chkhsh == "6221ad2852e85ce96f791f476e0b390cf9b474c9e3d1362f53a24a06dc8220ff":
             # ref: https://huggingface.co/smallcloudai/Refact-1_6-base
             res = "refact"
         if chkhsh == "9c2227e4dd922002fb81bde4fc02b0483ca4f12911410dee2255e4987644e3f8":
             # ref: https://huggingface.co/CohereForAI/c4ai-command-r-v01
             res = "command-r"
+        if chkhsh == "e636dc30a262dcc0d8c323492e32ae2b70728f4df7dfe9737d9f920a282b8aea":
+            # ref: https://huggingface.co/Qwen/Qwen1.5-7B
+            res = "qwen2"
+        if chkhsh == "b6dc8df998e1cfbdc4eac8243701a65afe638679230920b50d6f17d81c098166":
+            # ref: https://huggingface.co/allenai/OLMo-1.7-7B-hf
+            res = "olmo"
+        if chkhsh == "a8594e3edff7c29c003940395316294b2c623e09894deebbc65f33f1515df79e":
+            # ref: https://huggingface.co/databricks/dbrx-base
+            res = "dbrx"
+        if chkhsh == "0876d13b50744004aa9aeae05e7b0647eac9d801b5ba4668afc01e709c15e19f":
+            # ref: https://huggingface.co/jinaai/jina-embeddings-v2-base-en
+            res = "jina-v2-en"
+        if chkhsh == "171aeeedd6fb548d418a7461d053f11b6f1f1fc9b387bd66640d28a4b9f5c643":
+            # ref: https://huggingface.co/jinaai/jina-embeddings-v2-base-es
+            res = "jina-v2-es"
+        if chkhsh == "27949a2493fc4a9f53f5b9b029c82689cfbe5d3a1929bb25e043089e28466de6":
+            # ref: https://huggingface.co/jinaai/jina-embeddings-v2-base-de
+            res = "jina-v2-de"
+        if chkhsh == "c136ed14d01c2745d4f60a9596ae66800e2b61fa45643e72436041855ad4089d":
+            # ref: https://huggingface.co/abacusai/Smaug-Llama-3-70B-Instruct
+            res = "smaug-bpe"
+        if chkhsh == "c7ea5862a53e4272c035c8238367063e2b270d51faa48c0f09e9d5b54746c360":
+            # ref: https://huggingface.co/LumiOpen/Poro-34B-chat
+            res = "poro-chat"
+        if chkhsh == "7967bfa498ade6b757b064f31e964dddbb80f8f9a4d68d4ba7998fcf281c531a":
+            # ref: https://huggingface.co/jinaai/jina-embeddings-v2-base-code
+            res = "jina-v2-code"
+        if chkhsh == "b6e8e1518dc4305be2fe39c313ed643381c4da5db34a98f6a04c093f8afbe99b":
+            # ref: https://huggingface.co/THUDM/glm-4-9b-chat
+            res = "chatglm-bpe"
+        if chkhsh == "7fc505bd3104ca1083b150b17d088b59534ede9bde81f0dd2090967d7fe52cee":
+            # ref: https://huggingface.co/LumiOpen/Viking-7B
+            res = "viking"
+        if chkhsh == "b53802fb28e26d645c3a310b34bfe07da813026ec7c7716883404d5e0f8b1901":
+            # ref: https://huggingface.co/core42/jais-13b
+            res = "jais"
 
         if res is None:
             logger.warning("\n")
@@ -1419,7 +1458,6 @@ def real_quantize_tensor(w, n_bit=8, zero_point=True, q_group_size=-1):
         scales = (max_val - min_val).clamp(min=1e-5) / max_int
         zeros = (-torch.round(min_val / scales)).clamp_(min_int, max_int)
     else:  # we actually never used this
-        assert min_val is None
         max_val = w.abs().amax(dim=1, keepdim=True)
         max_val = max_val.clamp(min=1e-5)
         max_int = 2 ** (n_bit - 1) - 1

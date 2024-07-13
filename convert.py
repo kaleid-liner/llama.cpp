@@ -44,7 +44,7 @@ if hasattr(faulthandler, 'register') and hasattr(signal, 'SIGUSR1'):
 
 NDArray: TypeAlias = 'np.ndarray[Any, Any]'
 
-ARCH = gguf.MODEL_ARCH.BITNET
+ARCH = gguf.MODEL_ARCH.LLAMA
 
 DEFAULT_CONCURRENCY = 16
 
@@ -179,7 +179,7 @@ SAFETENSORS_DATA_TYPES: dict[str, DataType] = {
 class GGMLFileType(enum.IntEnum):
     AllF32     = 0
     MostlyF16  = 1  # except 1d tensors
-    MostlyI2   = 2  # except 1d tensors
+    MostlyI2   = 32  # except 1d tensors
     MostlyQ8_0 = 7  # except 1d tensors
 
     def type_for_tensor(self, name: str, tensor: LazyTensor) -> DataType:
@@ -1435,8 +1435,8 @@ def convert_model_names(model: LazyModel, params: Params, skip_unknown: bool) ->
             break
     
     # check if is bitnet
-    if ARCH == 33:
-        del tmp['output.weight']
+    # if ARCH == 33:
+    #     del tmp['output.weight']
 
     out: LazyModel = {}
     for name, lazy_tensor in model.items():
