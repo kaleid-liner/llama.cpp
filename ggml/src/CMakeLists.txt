@@ -1157,6 +1157,12 @@ if (CMAKE_OSX_ARCHITECTURES      STREQUAL "arm64" OR
             # TODO: check_cxx_source_compiles
             list(APPEND ARCH_FLAGS -march=armv8.2a+fp16)
         endif()
+        if (${CMAKE_SYSTEM_PROCESSOR} MATCHES "ARM64" AND LLAMA_TMAC AND TMAC_FOUND)
+            # ARM Windows with LLVM clang GNU interface
+            # We need fullfp16 for T-MAC
+            # TODO: check_cxx_source_compiles
+            list(APPEND ARCH_FLAGS -march=armv8.2a+fp16)
+        endif()
         if (GGML_SVE)
             list(APPEND ARCH_FLAGS -march=armv8.6-a+sve)
         endif()
