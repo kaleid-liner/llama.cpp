@@ -4430,6 +4430,9 @@ static void llm_load_vocab(
             } else if (
                 tokenizer_pre == "command-r") {
                 vocab.type_pre = LLAMA_VOCAB_PRE_TYPE_COMMAND_R;
+            } else if (
+                tokenizer_pre == "smaug-bpe") {
+                vocab.type_pre = LLAMA_VOCAB_PRE_TYPE_SMAUG;
             } else {
                 throw std::runtime_error(format("unknown pre-tokenizer type: '%s'", tokenizer_pre.c_str()));
             }
@@ -12418,6 +12421,7 @@ struct llm_tokenizer_bpe {
             case LLAMA_VOCAB_TYPE_BPE:
                 switch (vocab.type_pre) {
                     case LLAMA_VOCAB_PRE_TYPE_LLAMA3:
+                    case LLAMA_VOCAB_PRE_TYPE_SMAUG:
                         word_collection = unicode_regex_split(text, {
                             // original regex from tokenizer.json
                             //"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}{1,3}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+",
