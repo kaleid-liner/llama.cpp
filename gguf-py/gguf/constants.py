@@ -1292,6 +1292,9 @@ class GGMLQuantizationType(IntEnum):
     Q4_0_4_8 = 32
     Q4_0_8_8 = 33
     I2       = 34
+    I1       = 35
+    I3       = 36
+    I4       = 37
 
 
 # TODO: add GGMLFileType from ggml_ftype in ggml.h
@@ -1414,6 +1417,9 @@ GGML_QUANT_SIZES: dict[GGMLQuantizationType, tuple[int, int]] = {
     GGMLQuantizationType.Q4_0_4_8:(32, 2 + 16),
     GGMLQuantizationType.Q4_0_8_8:(32, 2 + 16),
     GGMLQuantizationType.I2:      (4, 1),
+    GGMLQuantizationType.I1:      (8, 1),
+    GGMLQuantizationType.I3:      (2, 1),
+    GGMLQuantizationType.I4:      (2, 1),
 }
 
 

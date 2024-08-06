@@ -45,7 +45,7 @@ class SentencePieceTokenTypes(IntEnum):
 class LlamaFType(IntEnum):
     F32 = 0
     MOSTLY_F16 = 1
-    MOSTLY_I2 = 32
+    MOSTLY_IN = 32
 
 
 AnyModel = TypeVar("AnyModel", bound="type[Model]")
@@ -253,11 +253,11 @@ class Model(ABC):
         if self.is_safetensors:
             if self.num_parts == 1:  # there's only one .safetensors file
                 return ("model.safetensors",)
-            return (f"model-{n:05}-of-{self.num_parts:05}.safetensors" for n in range(1, self.num_parts + 1))
+            return tuple(f"model-{n:05}-of-{self.num_parts:05}.safetensors" for n in range(1, self.num_parts + 1))
 
         if self.num_parts == 1:  # there's only one .bin file
             return ("pytorch_model.bin",)
-        return (f"pytorch_model-{n:05}-of-{self.num_parts:05}.bin" for n in range(1, self.num_parts + 1))
+        return tuple(f"pytorch_model-{n:05}-of-{self.num_parts:05}.bin" for n in range(1, self.num_parts + 1))
 
     # used for GPT-2 BPE and WordPiece vocabs
     def get_vocab_base(self) -> tuple[list[str], list[int], str]:
@@ -1589,10 +1589,16 @@ class LlamaModel(Model):
                 data_shape = w.shape
                 new_name = tensor_map.get_name(name.replace(".qweight", ".weight"), try_suffixes=(".weight", ".bias"))
 
-                if self.ftype == LlamaFType.MOSTLY_I2:
-                    to_dtype = gguf.GGMLQuantizationType.I2
+                if self.ftype == LlamaFType.MOSTLY_IN:
+                    if bits == 1:
+                        to_dtype = gguf.GGMLQuantizationType.I1
+                    elif bits == 2:
+                        to_dtype = gguf.GGMLQuantizationType.I2
+                    elif bits == 3:
+                        to_dtype = gguf.GGMLQuantizationType.I3
+                    elif bits == 4:
+                        to_dtype = gguf.GGMLQuantizationType.I4
                     data = preprocess_for_t_mac(w, scales, zeros, bits=bits)
-                    assert bits == 2, "Currently we only support 2-bit quantized model. 4-bit will soon be added."
                 else:
                     to_dtype = gguf.GGMLQuantizationType.F32
                     w = w.astype("float32").reshape(-1, group_size)
@@ -1693,7 +1699,7 @@ class LlamaModel(Model):
             to_dtype = gguf.GGMLQuantizationType.F32
 
             if self.ftype != LlamaFType.F32 and extra_f16 and not extra_f32:
-                if self.ftype == LlamaFType.MOSTLY_I2 and any(self.match_model_tensor_name(new_name, key, bid) for key in [
+                if self.ftype == LlamaFType.MOSTLY_IN and any(self.match_model_tensor_name(new_name, key, bid) for key in [
                     gguf.MODEL_TENSOR.ATTN_Q,
                     gguf.MODEL_TENSOR.ATTN_K,
                     gguf.MODEL_TENSOR.ATTN_V,
@@ -3231,7 +3237,7 @@ class BitnetModel(Model):
                     suit_i2 = False
 
                 if self.ftype != LlamaFType.F32 and extra_f16 and not extra_f32:
-                    if self.ftype == LlamaFType.MOSTLY_I2 and suit_i2:
+                    if self.ftype == LlamaFType.MOSTLY_IN and suit_i2:
                         data = self.transform_to_i2(data)
                         assert data.dtype == np.uint8
                         data_qtype = gguf.GGMLQuantizationType.I2
@@ -3275,7 +3281,7 @@ def parse_args() -> argparse.Namespace:
         help="path to write to; default: based on input",
     )
     parser.add_argument(
-        "--outtype", type=str, choices=["f32", "f16", "i2"], default="f16",
+        "--outtype", type=str, choices=["f32", "f16", "i2", "i3", "i4", "in"], default="f16",
         help="output format - use f32 for float32, f16 for float16",
     )
     parser.add_argument("--bigendian", action="store_true", help="model is executed on big endian machine")
@@ -3318,7 +3324,10 @@ def main() -> None:
     ftype_map = {
         "f32": LlamaFType.F32,
         "f16": LlamaFType.MOSTLY_F16, 
-        "i2" : LlamaFType.MOSTLY_I2,
+        "in" : LlamaFType.MOSTLY_IN,
+        "i2" : LlamaFType.MOSTLY_IN,
+        "i3" : LlamaFType.MOSTLY_IN,
+        "i4" : LlamaFType.MOSTLY_IN,
     }
 
     if args.outfile is not None:

@@ -4452,7 +4452,10 @@ struct llama_model_loader {
                 case GGML_TYPE_Q4_0_4_4: ftype = LLAMA_FTYPE_MOSTLY_Q4_0_4_4; break;
                 case GGML_TYPE_Q4_0_4_8: ftype = LLAMA_FTYPE_MOSTLY_Q4_0_4_8; break;
                 case GGML_TYPE_Q4_0_8_8: ftype = LLAMA_FTYPE_MOSTLY_Q4_0_8_8; break;
-                case GGML_TYPE_I2      : ftype = LLAMA_FTYPE_MOSTLY_I2      ; break;
+                case GGML_TYPE_I2:      ftype = LLAMA_FTYPE_MOSTLY_IN;      break;
+                case GGML_TYPE_I1:      ftype = LLAMA_FTYPE_MOSTLY_IN;      break;
+                case GGML_TYPE_I3:      ftype = LLAMA_FTYPE_MOSTLY_IN;      break;
+                case GGML_TYPE_I4:      ftype = LLAMA_FTYPE_MOSTLY_IN;      break;
                 default:
                     {
                         LLAMA_LOG_WARN("%s: unknown type %s\n", __func__, ggml_type_name(type_max));
@@ -5132,6 +5135,7 @@ static std::string llama_model_ftype_name(llama_ftype ftype) {
         case LLAMA_FTYPE_MOSTLY_Q5_0:     return "Q5_0";
         case LLAMA_FTYPE_MOSTLY_Q5_1:     return "Q5_1";
         case LLAMA_FTYPE_MOSTLY_Q8_0:     return "Q8_0";
+        case LLAMA_FTYPE_MOSTLY_IN:       return "IN";
         case LLAMA_FTYPE_MOSTLY_Q2_K:     return "Q2_K - Medium";
         case LLAMA_FTYPE_MOSTLY_Q2_K_S:   return "Q2_K - Small";
         case LLAMA_FTYPE_MOSTLY_Q3_K_S:   return "Q3_K - Small";
@@ -17240,7 +17244,7 @@ static void llama_model_quantize_internal(const std::string & fname_inp, const s
         case LLAMA_FTYPE_MOSTLY_F16:  default_type = GGML_TYPE_F16;  break;
         case LLAMA_FTYPE_MOSTLY_BF16: default_type = GGML_TYPE_BF16; break;
         case LLAMA_FTYPE_ALL_F32:     default_type = GGML_TYPE_F32;  break;
-        case LLAMA_FTYPE_MOSTLY_I2:   default_type = GGML_TYPE_I2;   break;
+        case LLAMA_FTYPE_MOSTLY_IN:   default_type = GGML_TYPE_I2;   break;
 
         // K-quants
         case LLAMA_FTYPE_MOSTLY_Q2_K_S:
@@ -17525,7 +17529,10 @@ static void llama_model_quantize_internal(const std::string & fname_inp, const s
             if (params->output_tensor_type < GGML_TYPE_COUNT && strcmp(tensor->name, "output.weight") == 0) {
                 new_type = params->output_tensor_type;
             }
-            if (tensor->type == GGML_TYPE_I2) {
+            if (tensor->type == GGML_TYPE_I2 ||
+                tensor->type == GGML_TYPE_I1 ||
+                tensor->type == GGML_TYPE_I3 ||
+                tensor->type == GGML_TYPE_I4) {
                 // no need quantize for i2
                 new_type = tensor->type;
             }

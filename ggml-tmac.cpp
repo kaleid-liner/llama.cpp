@@ -71,7 +71,10 @@ void ggml_tmac_free(void) {
 
 static bool is_type_supported(enum ggml_type type) {
     if (type == GGML_TYPE_Q4_0 ||
-        type == GGML_TYPE_I2) {
+        type == GGML_TYPE_I2 ||
+        type == GGML_TYPE_I1 ||
+        type == GGML_TYPE_I3 ||
+        type == GGML_TYPE_I4) {
         return true;
     } else {
         return false;
@@ -79,7 +82,10 @@ static bool is_type_supported(enum ggml_type type) {
 }
 
 static bool do_permutate(enum ggml_type type) {
-    if (type == GGML_TYPE_I2) {
+    if (type == GGML_TYPE_I2 ||
+        type == GGML_TYPE_I1 ||
+        type == GGML_TYPE_I3 ||
+        type == GGML_TYPE_I4) {
         // Add additional args to decide if permuted I2 or naive I2
         return false;
     } else {
@@ -381,6 +387,12 @@ int ggml_tmac_get_type_bits(enum ggml_type type) {
     switch (type) {
         case GGML_TYPE_I2:
             return 2;
+        case GGML_TYPE_I1:
+            return 1;
+        case GGML_TYPE_I3:
+            return 3;
+        case GGML_TYPE_I4:
+            return 4;
         case GGML_TYPE_Q4_0:
             return 4;
         default:
