@@ -4760,17 +4760,16 @@ struct llama_model_loader {
             bool is_ok = true;
             for (size_t i = 0; i < GGML_MAX_DIMS; ++i) {
                 if ((i < ne.size() && ne[i] != cur->ne[i]) || (i >= ne.size() && cur->ne[i] != 1)) {
-                    // is_ok = false;
-                    cur->ne[i] = ne[i];
-                    // break;
+                    is_ok = false;
+                    break;
                 }
             }
             if (!is_ok) {
-                // throw std::runtime_error(
-                //         format("%s: tensor '%s' has wrong shape; expected %s, got %s",
-                //             __func__, name.c_str(),
-                //             llama_format_tensor_shape(ne).c_str(),
-                //             llama_format_tensor_shape(cur).c_str()));
+                throw std::runtime_error(
+                        format("%s: tensor '%s' has wrong shape; expected %s, got %s",
+                            __func__, name.c_str(),
+                            llama_format_tensor_shape(ne).c_str(),
+                            llama_format_tensor_shape(cur).c_str()));
             }
         }
 
