@@ -4452,8 +4452,8 @@ struct llama_model_loader {
                 case GGML_TYPE_Q4_0_4_4: ftype = LLAMA_FTYPE_MOSTLY_Q4_0_4_4; break;
                 case GGML_TYPE_Q4_0_4_8: ftype = LLAMA_FTYPE_MOSTLY_Q4_0_4_8; break;
                 case GGML_TYPE_Q4_0_8_8: ftype = LLAMA_FTYPE_MOSTLY_Q4_0_8_8; break;
-                case GGML_TYPE_I2:      ftype = LLAMA_FTYPE_MOSTLY_IN;      break;
                 case GGML_TYPE_I1:      ftype = LLAMA_FTYPE_MOSTLY_IN;      break;
+                case GGML_TYPE_I2:      ftype = LLAMA_FTYPE_MOSTLY_IN;      break;
                 case GGML_TYPE_I3:      ftype = LLAMA_FTYPE_MOSTLY_IN;      break;
                 case GGML_TYPE_I4:      ftype = LLAMA_FTYPE_MOSTLY_IN;      break;
                 default:
@@ -17525,11 +17525,11 @@ static void llama_model_quantize_internal(const std::string & fname_inp, const s
             if (params->output_tensor_type < GGML_TYPE_COUNT && strcmp(tensor->name, "output.weight") == 0) {
                 new_type = params->output_tensor_type;
             }
-            if (tensor->type == GGML_TYPE_I2 ||
-                tensor->type == GGML_TYPE_I1 ||
+            if (tensor->type == GGML_TYPE_I1 ||
+                tensor->type == GGML_TYPE_I2 ||
                 tensor->type == GGML_TYPE_I3 ||
                 tensor->type == GGML_TYPE_I4) {
-                // no need quantize for i2
+                // no need quantize for iN
                 new_type = tensor->type;
             }
 

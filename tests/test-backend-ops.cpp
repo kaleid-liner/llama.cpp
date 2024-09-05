@@ -48,7 +48,7 @@ static void init_tensor_uniform(ggml_tensor * tensor, float min = -1.0f, float m
     for (auto & t : threads) {
         t.join();
     }
-    
+
 #if 0
     const char * val_str = getenv("GGML_TEST_EPS");
     float val = 1e-9f;

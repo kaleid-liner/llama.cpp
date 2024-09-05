@@ -58,7 +58,6 @@ TEST_TARGETS = \
 	tests/test-quantize-perf \
 	tests/test-rope \
 	tests/test-sampling \
-	tests/test-tmac-ops \
 	tests/test-tokenizer-0 \
 	tests/test-tokenizer-1-bpe \
 	tests/test-tokenizer-1-spm
@@ -1580,10 +1579,6 @@ tests/test-c.o: tests/test-c.c include/llama.h
 
 tests/test-backend-ops: tests/test-backend-ops.cpp \
 	$(OBJ_GGML)
-	$(CXX) $(CXXFLAGS) -c $< -o $(call GET_OBJ_FILE, $<)
-	$(CXX) $(CXXFLAGS) $(filter-out %.h $<,$^) $(call GET_OBJ_FILE, $<) -o $@ $(LDFLAGS)
-
-tests/test-tmac-ops: tests/test-tmac-ops.cpp ggml.o $(OBJS)
 	$(CXX) $(CXXFLAGS) -c $< -o $(call GET_OBJ_FILE, $<)
 	$(CXX) $(CXXFLAGS) $(filter-out %.h $<,$^) $(call GET_OBJ_FILE, $<) -o $@ $(LDFLAGS)
 
