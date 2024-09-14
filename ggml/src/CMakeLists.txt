@@ -1157,7 +1157,7 @@ if (CMAKE_OSX_ARCHITECTURES      STREQUAL "arm64" OR
             # TODO: check_cxx_source_compiles
             list(APPEND ARCH_FLAGS -march=armv8.2a+fp16)
         endif()
-        if (${CMAKE_SYSTEM_PROCESSOR} MATCHES "ARM64" AND LLAMA_TMAC AND TMAC_FOUND)
+        if (${CMAKE_SYSTEM_PROCESSOR} MATCHES "ARM64" AND GGML_TMAC AND TMAC_FOUND)
             # ARM Windows with LLVM clang GNU interface
             # We need fullfp16 for T-MAC
             # TODO: check_cxx_source_compiles
@@ -1177,7 +1177,7 @@ elseif (CMAKE_OSX_ARCHITECTURES STREQUAL "x86_64" OR CMAKE_GENERATOR_PLATFORM_LW
             # TODO: improve, should not reference files from the parent folder
             include(../cmake/FindSIMD.cmake)
         endif ()
-        # Can't use LLAMA_AVX512 with Clang for MSVC
+        # Can't use GGML_AVX512 with Clang for MSVC
         # with error: conflicting types for '_m_prefetchw
         if (GGML_AVX512 AND (NOT ${CMAKE_C_COMPILER_ID} MATCHES "Clang") AND (NOT ${CMAKE_CXX_COMPILER_ID} MATCHES "Clang"))
             list(APPEND ARCH_FLAGS /arch:AVX512)
