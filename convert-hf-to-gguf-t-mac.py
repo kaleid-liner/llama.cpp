@@ -45,7 +45,7 @@ class SentencePieceTokenTypes(IntEnum):
 class LlamaFType(IntEnum):
     F32 = 0
     MOSTLY_F16 = 1
-    MOSTLY_IN = 32
+    MOSTLY_INT_N = 32
 
 
 AnyModel = TypeVar("AnyModel", bound="type[Model]")
@@ -196,7 +196,7 @@ class Model(ABC):
                 data_shape = w.shape
                 new_name = tensor_map.get_name(name.replace(".qweight", ".weight"), try_suffixes=(".weight", ".bias"))
 
-                if self.ftype == LlamaFType.MOSTLY_IN:
+                if self.ftype == LlamaFType.MOSTLY_INT_N:
                     if bits == 1:
                         to_dtype = gguf.GGMLQuantizationType.I1
                     elif bits == 2:
@@ -1639,7 +1639,7 @@ class LlamaModel(Model):
                 data_shape = w.shape
                 new_name = tensor_map.get_name(name.replace(".qweight", ".weight"), try_suffixes=(".weight", ".bias"))
 
-                if self.ftype == LlamaFType.MOSTLY_IN:
+                if self.ftype == LlamaFType.MOSTLY_INT_N:
                     if bits == 1:
                         to_dtype = gguf.GGMLQuantizationType.I1
                     elif bits == 2:
@@ -1754,7 +1754,7 @@ class LlamaModel(Model):
             to_dtype = gguf.GGMLQuantizationType.F32
 
             if self.ftype != LlamaFType.F32 and extra_f16 and not extra_f32:
-                if self.ftype == LlamaFType.MOSTLY_IN and any(self.match_model_tensor_name(new_name, key, bid) for key in [
+                if self.ftype == LlamaFType.MOSTLY_INT_N and any(self.match_model_tensor_name(new_name, key, bid) for key in [
                     gguf.MODEL_TENSOR.ATTN_Q,
                     gguf.MODEL_TENSOR.ATTN_K,
                     gguf.MODEL_TENSOR.ATTN_V,
@@ -3292,7 +3292,7 @@ class BitnetModel(Model):
                     suit_i2 = False
 
                 if self.ftype != LlamaFType.F32 and extra_f16 and not extra_f32:
-                    if self.ftype == LlamaFType.MOSTLY_IN and suit_i2:
+                    if self.ftype == LlamaFType.MOSTLY_INT_N and suit_i2:
                         data = self.transform_to_i2(data)
                         assert data.dtype == np.uint8
                         data_qtype = gguf.GGMLQuantizationType.I2
@@ -3379,10 +3379,10 @@ def main() -> None:
     ftype_map = {
         "f32": LlamaFType.F32,
         "f16": LlamaFType.MOSTLY_F16, 
-        "in" : LlamaFType.MOSTLY_IN,
-        "i2" : LlamaFType.MOSTLY_IN,
-        "i3" : LlamaFType.MOSTLY_IN,
-        "i4" : LlamaFType.MOSTLY_IN,
+        "in" : LlamaFType.MOSTLY_INT_N,
+        "i2" : LlamaFType.MOSTLY_INT_N,
+        "i3" : LlamaFType.MOSTLY_INT_N,
+        "i4" : LlamaFType.MOSTLY_INT_N,
     }
 
     if args.outfile is not None:
