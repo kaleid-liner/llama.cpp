@@ -11,12 +11,12 @@ import json
 import os
 import re
 import sys
-from abc import ABC, abstractmethod
 from enum import IntEnum
 from pathlib import Path
 from hashlib import sha256
 from typing import TYPE_CHECKING, Any, Callable, ContextManager, Iterable, Iterator, Literal, Sequence, TypeVar, cast
 
+import math
 import numpy as np
 import torch
 
@@ -26,8 +26,6 @@ if TYPE_CHECKING:
 if 'NO_LOCAL_GGUF' not in os.environ:
     sys.path.insert(1, str(Path(__file__).parent / 'gguf-py'))
 import gguf
-
-from convert import LlamaHfVocab, permute
 
 logger = logging.getLogger("hf-to-gguf")
 
@@ -46,7 +44,7 @@ class SentencePieceTokenTypes(IntEnum):
 AnyModel = TypeVar("AnyModel", bound="type[Model]")
 
 
-class Model(ABC):
+class Model:
     _model_classes: dict[str, type[Model]] = {}
 
     dir_model: Path
@@ -80,7 +78,6 @@ class Model(ABC):
 
         self.dir_model = dir_model
         self.ftype = ftype
-        self.fname_out = fname_out
         self.fname_out = fname_out
         self.is_big_endian = is_big_endian
         self.endianess = gguf.GGUFEndian.BIG if is_big_endian else gguf.GGUFEndian.LITTLE
@@ -133,6 +130,22 @@ class Model(ABC):
         self._set_vocab_gpt2()
 
     def get_tensors(self) -> Iterator[tuple[str, Tensor]]:
+        tensor_names_from_parts: set[str] = set()
+
+        if len(self.part_names) > 1:
+            self.tensor_names = set()
+            index_name = "model.safetensors" if self.is_safetensors else "pytorch_model.bin"
+            index_name += ".index.json"
+            logger.info(f"gguf: loading model weight map from '{index_name}'")
+            with open(self.dir_model / index_name, "r", encoding="utf-8") as f:
+                index: dict[str, Any] = json.load(f)
+                weight_map = index.get("weight_map")
+                if weight_map is None or not isinstance(weight_map, dict):
+                    raise ValueError(f"Can't load 'weight_map' from {index_name!r}")
+                self.tensor_names.update(weight_map.keys())
+        else:
+            self.tensor_names = tensor_names_from_parts
+
         for part_name in self.part_names:
             logger.info(f"gguf: loading model part '{part_name}'")
             ctx: ContextManager[Any]
@@ -143,6 +156,8 @@ class Model(ABC):
                 ctx = contextlib.nullcontext(torch.load(str(self.dir_model / part_name), map_location="cpu", mmap=True, weights_only=True))
 
             with ctx as model_part:
+                tensor_names_from_parts.update(model_part.keys())
+
                 for name in model_part.keys():
                     if self.is_safetensors:
                         if self.lazy:
@@ -155,6 +170,38 @@ class Model(ABC):
                         if self.lazy:
                             data = LazyTorchTensor.from_eager(data)
                     yield name, data
+
+        # only verify tensor name presence; it doesn't matter if they are not in the right files
+        if len(sym_diff := tensor_names_from_parts.symmetric_difference(self.tensor_names)) > 0:
+            raise ValueError(f"Mismatch between weight map and model parts for tensor names: {sym_diff}")
+
+    def format_tensor_name(self, key: gguf.MODEL_TENSOR, bid: int | None = None, suffix: str = ".weight") -> str:
+        if key not in gguf.MODEL_TENSORS[self.model_arch]:
+            raise ValueError(f"Missing {key!r} for MODEL_TENSORS of {self.model_arch!r}")
+        name: str = gguf.TENSOR_NAMES[key]
+        if "{bid}" in name:
+            assert bid is not None
+            name = name.format(bid=bid)
+        return name + suffix
+
+    def match_model_tensor_name(self, name: str, key: gguf.MODEL_TENSOR, bid: int | None, suffix: str = ".weight") -> bool:
+        if key not in gguf.MODEL_TENSORS[self.model_arch]:
+            return False
+        key_name: str = gguf.TENSOR_NAMES[key]
+        if "{bid}" in key_name:
+            if bid is None:
+                return False
+            key_name = key_name.format(bid=bid)
+        else:
+            if bid is not None:
+                return False
+        return name == (key_name + suffix)
+
+    def map_tensor_name(self, name: str, try_suffixes: Sequence[str] = (".weight", ".bias")) -> str:
+        new_name = self.tensor_map.get_name(key=name, try_suffixes=try_suffixes)
+        if new_name is None:
+            raise ValueError(f"Can not map tensor {name!r}")
+        return new_name
 
     def set_gguf_parameters(self):
         self.gguf_writer.add_block_count(self.block_count)
@@ -217,7 +264,7 @@ class Model(ABC):
 
         for name, data_torch in self.get_tensors():
             # we don't need these
-            if name.endswith((".attention.masked_bias", ".attention.bias", ".attention.rotary_emb.inv_freq")):
+            if name.endswith((".attention.masked_bias", ".attention.bias", ".rotary_emb.inv_freq")):
                 continue
 
             old_dtype = data_torch.dtype
@@ -348,7 +395,7 @@ class Model(ABC):
         self.prepare_metadata(vocab_only=False)
         self.gguf_writer.write_header_to_file(path=self.fname_out)
         self.gguf_writer.write_kv_data_to_file()
-        self.gguf_writer.write_tensors_to_file()
+        self.gguf_writer.write_tensors_to_file(progress=True)
         self.gguf_writer.close()
 
     def write_vocab(self):
@@ -367,10 +414,12 @@ class Model(ABC):
             if filename.startswith(prefix) and filename.endswith(suffix):
                 part_names.append(filename)
 
-        return num_parts
+        part_names.sort()
+
+        return part_names
 
     @staticmethod
-    def load_hparams(dir_model):
+    def load_hparams(dir_model: Path):
         with open(dir_model / "config.json", "r", encoding="utf-8") as f:
             return json.load(f)
 
@@ -378,14 +427,14 @@ class Model(ABC):
     def register(cls, *names: str) -> Callable[[AnyModel], AnyModel]:
         assert names
 
-        def func(modelcls: type[Model]):
+        def func(modelcls: AnyModel) -> AnyModel:
             for name in names:
                 cls._model_classes[name] = modelcls
             return modelcls
         return func
 
     @classmethod
-    def from_model_architecture(cls, arch):
+    def from_model_architecture(cls, arch: str) -> type[Model]:
         try:
             return cls._model_classes[arch]
         except KeyError:
@@ -450,6 +499,7 @@ class Model(ABC):
     # NOTE: this function is generated by convert_hf_to_gguf_update.py
     #       do not modify it manually!
     # ref:  https://github.com/ggerganov/llama.cpp/pull/6920
+    # Marker: Start get_vocab_base_pre
     def get_vocab_base_pre(self, tokenizer) -> str:
         # encoding this string and hashing the resulting tokens would (hopefully) give us a unique identifier that
         # is specific for the BPE pre-tokenizer used by the model
@@ -493,6 +543,9 @@ class Model(ABC):
         if chkhsh == "3ce83efda5659b07b1ad37ca97ca5797ea4285d9b9ab0dc679e4a720c9da7454":
             # ref: https://huggingface.co/openai-community/gpt2
             res = "gpt-2"
+        if chkhsh == "32d85c31273f8019248f2559fed492d929ea28b17e51d81d3bb36fff23ca72b3":
+            # ref: https://huggingface.co/stabilityai/stablelm-2-zephyr-1_6b
+            res = "stablelm2"
         if chkhsh == "6221ad2852e85ce96f791f476e0b390cf9b474c9e3d1362f53a24a06dc8220ff":
             # ref: https://huggingface.co/smallcloudai/Refact-1_6-base
             res = "refact"
@@ -573,6 +626,7 @@ class Model(ABC):
         logger.debug(f"chkhsh: {chkhsh}")
 
         return res
+        # Marker: End get_vocab_base_pre
 
     def _set_vocab_gpt2(self) -> None:
         tokens, toktypes, tokpre = self.get_vocab_base()
@@ -610,7 +664,7 @@ class Model(ABC):
 
         # for this kind of tokenizer, added_vocab is not a subset of vocab, so they need to be combined
         added_vocab = tokenizer.special_tokens
-        reverse_vocab = {id_ : encoded_tok for encoded_tok, id_ in (vocab | added_vocab).items()}
+        reverse_vocab = {id_ : encoded_tok for encoded_tok, id_ in {**vocab, **added_vocab}.items()}
 
         for i in range(vocab_size):
             if i not in reverse_vocab:
@@ -658,7 +712,9 @@ class Model(ABC):
         if not tokenizer_path.is_file():
             raise FileNotFoundError(f"File not found: {tokenizer_path}")
 
-        tokenizer = SentencePieceProcessor(str(tokenizer_path))
+        tokenizer = SentencePieceProcessor()
+        tokenizer.LoadFromFile(str(tokenizer_path))
+
         vocab_size = self.hparams.get('vocab_size', tokenizer.vocab_size())
 
         tokens: list[bytes] = [f"[PAD{i}]".encode("utf-8") for i in range(vocab_size)]
@@ -666,29 +722,28 @@ class Model(ABC):
         toktypes: list[int] = [SentencePieceTokenTypes.UNUSED] * vocab_size
 
         for token_id in range(tokenizer.vocab_size()):
-            piece = tokenizer.id_to_piece(token_id)
+            piece = tokenizer.IdToPiece(token_id)
             text = piece.encode("utf-8")
-            score = tokenizer.get_score(token_id)
+            score = tokenizer.GetScore(token_id)
 
             toktype = SentencePieceTokenTypes.NORMAL
-            if tokenizer.is_unknown(token_id):
+            if tokenizer.IsUnknown(token_id):
                 toktype = SentencePieceTokenTypes.UNKNOWN
-            elif tokenizer.is_control(token_id):
+            elif tokenizer.IsControl(token_id):
                 toktype = SentencePieceTokenTypes.CONTROL
-            elif tokenizer.is_unused(token_id):
+            elif tokenizer.IsUnused(token_id):
                 toktype = SentencePieceTokenTypes.UNUSED
-            elif tokenizer.is_byte(token_id):
+            elif tokenizer.IsByte(token_id):
                 toktype = SentencePieceTokenTypes.BYTE
 
-            tokens.append(text)
-            scores.append(score)
-            toktypes.append(toktype)
+            tokens[token_id] = text
+            scores[token_id] = score
+            toktypes[token_id] = toktype
 
         added_tokens_file = self.dir_model / 'added_tokens.json'
         if added_tokens_file.is_file():
             with open(added_tokens_file, "r", encoding="utf-8") as f:
                 added_tokens_json = json.load(f)
-
                 for key in added_tokens_json:
                     token_id = added_tokens_json[key]
                     if token_id >= vocab_size:
@@ -723,14 +778,14 @@ class Model(ABC):
             pad_count = vocab_size - len(tokens)
             logger.debug(f"Padding vocab with {pad_count} token(s) - [PAD1] through [PAD{pad_count}]")
             for i in range(1, pad_count + 1):
-                tokens.append(f"[PAD{i}]")
+                tokens.append(bytes(f"[PAD{i}]", encoding="utf-8"))
                 scores.append(-1000.0)
                 toktypes.append(SentencePieceTokenTypes.UNUSED)
 
         return tokens, scores, toktypes
 
     def _set_vocab_llama_hf(self):
-        vocab = LlamaHfVocab(self.dir_model)
+        vocab = gguf.LlamaHfVocab(self.dir_model)
         tokens = []
         scores = []
         toktypes = []
@@ -870,81 +925,52 @@ class BloomModel(Model):
         self.gguf_writer.add_layer_norm_eps(self.hparams["layer_norm_epsilon"])
         self.gguf_writer.add_file_type(self.ftype)
 
-    def write_tensors(self):
-        block_count = self.hparams["n_layer"]
-        tensors = dict(self.get_tensors())
-        tensor_map = gguf.get_tensor_name_map(self.model_arch, block_count)
-        has_lm_head = True
+    def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
+        del bid  # unused
+
         n_head = self.hparams.get("n_head", self.hparams.get("num_attention_heads"))
         n_embed = self.hparams.get("hidden_size", self.hparams.get("n_embed"))
 
-        for name, data_torch in tensors.items():
-            if "lm_head.weight" not in tensors.keys() and "output.weight" not in tensors.keys():
-                has_lm_head = False
+        name = re.sub(r'transformer\.', '', name)
 
-            name = re.sub(r'transformer\.', '', name)
+        tensors: list[tuple[str, Tensor]] = []
 
-            old_dtype = data_torch.dtype
+        if re.match(r"h\.\d+\.self_attention\.query_key_value\.weight", name):
+            # Map bloom-style qkv_linear to gpt-style qkv_linear
+            # bloom: https://github.com/huggingface/transformers/blob/main/src/transformers/models/bloom/modeling_bloom.py#L238-L252  # noqa
+            # gpt-2: https://github.com/huggingface/transformers/blob/main/src/transformers/models/gpt2/modeling_gpt2.py#L312  # noqa
+            qkv_weights = data_torch.reshape((n_head, 3, n_embed // n_head, n_embed))
+            data_torch = torch.cat(
+                (
+                    qkv_weights[:, 0, :, :].reshape((-1, n_embed)),
+                    qkv_weights[:, 1, :, :].reshape((-1, n_embed)),
+                    qkv_weights[:, 2, :, :].reshape((-1, n_embed)),
+                ),
+                dim=0,
+            )
+            logger.info("re-format attention.linear_qkv.weight")
+        elif re.match(r"h\.\d+\.self_attention\.query_key_value\.bias", name):
+            qkv_bias = data_torch.reshape((n_head, 3, n_embed // n_head))
+            data_torch = torch.cat(
+                (
+                    qkv_bias[:, 0, :].reshape((n_embed,)),
+                    qkv_bias[:, 1, :].reshape((n_embed,)),
+                    qkv_bias[:, 2, :].reshape((n_embed,)),
+                ),
+                dim=0,
+            )
+            logger.info("re-format attention.linear_qkv.bias")
 
-            # convert any unsupported data types to float32
-            if data_torch.dtype not in (torch.float16, torch.float32):
-                data_torch = data_torch.to(torch.float32)
+        tensors.append((self.map_tensor_name(name), data_torch))
 
-            data = data_torch.squeeze().numpy()
+        if name == "word_embeddings.weight":
+            assert self.tensor_names is not None
 
-            if re.match(r"h\.\d+\.self_attention\.query_key_value\.weight", name):
-                # Map bloom-style qkv_linear to gpt-style qkv_linear
-                # bloom: https://github.com/huggingface/transformers/blob/main/src/transformers/models/bloom/modeling_bloom.py#L238-L252  # noqa
-                # gpt-2: https://github.com/huggingface/transformers/blob/main/src/transformers/models/gpt2/modeling_gpt2.py#L312  # noqa
-                qkv_weights = data.reshape((n_head, 3, n_embed // n_head, n_embed))
-                data = np.concatenate(
-                    (
-                        qkv_weights[:, 0, :, :].reshape((-1, n_embed)),
-                        qkv_weights[:, 1, :, :].reshape((-1, n_embed)),
-                        qkv_weights[:, 2, :, :].reshape((-1, n_embed)),
-                    ),
-                    axis=0,
-                )
-                logger.info("re-format attention.linear_qkv.weight")
-            elif re.match(r"h\.\d+\.self_attention\.query_key_value\.bias", name):
-                qkv_bias = data.reshape((n_head, 3, n_embed // n_head))
-                data = np.concatenate(
-                    (
-                        qkv_bias[:, 0, :].reshape((n_embed,)),
-                        qkv_bias[:, 1, :].reshape((n_embed,)),
-                        qkv_bias[:, 2, :].reshape((n_embed,)),
-                    ),
-                    axis=0,
-                )
-                logger.info("re-format attention.linear_qkv.bias")
+            # TODO: tie them at runtime, don't duplicate in the model file
+            if all(s not in self.tensor_names for s in ("lm_head.weight", "output.weight")):
+                tensors.append((self.format_tensor_name(gguf.MODEL_TENSOR.OUTPUT), data_torch))
 
-            # map tensor names
-            new_name = tensor_map.get_name(name, try_suffixes=(".weight", ".bias"))
-            if new_name is None:
-                raise ValueError(f"Can not map tensor {name!r}")
-
-            n_dims = len(data.shape)
-            data_dtype = data.dtype
-
-            # if f32 desired, convert any float16 to float32
-            if self.ftype == 0 and data_dtype == np.float16:
-                data = data.astype(np.float32)
-
-            # TODO: Why cant we use these float16 as-is? There should be not reason to store float16 as float32
-            if self.ftype == 1 and data_dtype == np.float16 and n_dims == 1:
-                data = data.astype(np.float32)
-
-            # if f16 desired, convert any float32 2-dim weight tensors to float16
-            if self.ftype == 1 and data_dtype == np.float32 and name.endswith(".weight") and n_dims == 2:
-                data = data.astype(np.float16)
-
-            logger.info(f"=> {new_name}, shape = {data.shape}, {old_dtype} --> {data.dtype}")
-
-            self.gguf_writer.add_tensor(new_name, data)
-
-            if not has_lm_head and name == "word_embeddings.weight":
-                self.gguf_writer.add_tensor("output.weight", data)
-                logger.info(name, f"=> output.weight, shape = {data.shape}, {old_dtype} --> {data.dtype}")
+        return tensors
 
 
 @Model.register("MPTForCausalLM")
@@ -979,50 +1005,16 @@ class MPTModel(Model):
         else:
             self.gguf_writer.add_max_alibi_bias(0.0)
 
-    def write_tensors(self):
-        block_count = self.hparams.get("n_layers", self.hparams.get("num_hidden_layers"))
-        tensor_map = gguf.get_tensor_name_map(self.model_arch, block_count)
-        for name, data_torch in self.get_tensors():
-            # we don't need these
-            if name.endswith((".attention.masked_bias", ".attention.bias", ".attention.rotary_emb.inv_freq")):
-                continue
+    def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
+        del bid  # unused
 
-            old_dtype = data_torch.dtype
+        if "scales" in name:
+            new_name = self.map_tensor_name(name, try_suffixes=(".weight", ".bias", ".scales"))
+            new_name = new_name.replace("scales", "act.scales")
+        else:
+            new_name = self.map_tensor_name(name, try_suffixes=(".weight", ".bias"))
 
-            # convert any unsupported data types to float32
-            if data_torch.dtype not in (torch.float16, torch.float32):
-                data_torch = data_torch.to(torch.float32)
-
-            data = data_torch.squeeze().numpy()
-
-            # map tensor names
-            if "scales" in name:
-                new_name = tensor_map.get_name(name, try_suffixes=(".weight", ".bias", ".scales"))
-                if new_name is not None:
-                    new_name = new_name.replace("scales", "act.scales")
-            else:
-                new_name = tensor_map.get_name(name, try_suffixes=(".weight", ".bias"))
-            if new_name is None:
-                raise ValueError(f"Can not map tensor {name!r}")
-
-            n_dims = len(data.shape)
-            data_dtype = data.dtype
-
-            # if f32 desired, convert any float16 to float32
-            if self.ftype == 0 and data_dtype == np.float16:
-                data = data.astype(np.float32)
-
-            # TODO: Why cant we use these float16 as-is? There should be not reason to store float16 as float32
-            if self.ftype == 1 and data_dtype == np.float16 and n_dims == 1:
-                data = data.astype(np.float32)
-
-            # if f16 desired, convert any float32 2-dim weight tensors to float16
-            if self.ftype == 1 and data_dtype == np.float32 and name.endswith(".weight") and n_dims == 2:
-                data = data.astype(np.float16)
-
-            logger.info(f"{new_name}, n_dims = {n_dims}, {old_dtype} --> {data.dtype}")
-
-            self.gguf_writer.add_tensor(new_name, data)
+        return [(new_name, data_torch)]
 
 
 @Model.register("OrionForCausalLM")
@@ -1059,48 +1051,6 @@ class OrionModel(Model):
         # ref:  https://huggingface.co/OrionStarAI/Orion-14B-Chat/blob/276a17221ce42beb45f66fac657a41540e71f4f5/modeling_orion.py#L570-L571
         self.gguf_writer.add_layer_norm_eps(self.hparams["rms_norm_eps"])
 
-    def write_tensors(self):
-        # Collect tensors from generator object
-        model_kv = dict(self.get_tensors())
-        block_count = self.hparams["num_hidden_layers"]
-        tensor_map = gguf.get_tensor_name_map(self.model_arch, block_count)
-
-        for name, data_torch in model_kv.items():
-            # we don't need these
-            if name.endswith(".rotary_emb.inv_freq"):
-                continue
-
-            old_dtype = data_torch.dtype
-
-            # convert any unsupported data types to float32
-            if data_torch.dtype not in (torch.float16, torch.float32):
-                data_torch = data_torch.to(torch.float32)
-
-            data = data_torch.squeeze().numpy()
-
-            # map tensor names
-            new_name = tensor_map.get_name(name, try_suffixes=(".weight", ".bias"))
-            if new_name is None:
-                raise ValueError(f"Can not map tensor {name!r}")
-
-            n_dims = len(data.shape)
-            data_dtype = data.dtype
-
-            # if f32 desired, convert any float16 to float32
-            if self.ftype == 0 and data_dtype == np.float16:
-                data = data.astype(np.float32)
-
-            # TODO: Why cant we use these float16 as-is? There should be not reason to store float16 as float32
-            if self.ftype == 1 and data_dtype == np.float16 and n_dims == 1:
-                data = data.astype(np.float32)
-
-            # if f16 desired, convert any float32 2-dim weight tensors to float16
-            if self.ftype == 1 and data_dtype == np.float32 and name.endswith(".weight") and n_dims == 2:
-                data = data.astype(np.float16)
-
-            logger.info(f"{name} -> {new_name}, n_dims = {n_dims}, {old_dtype} --> {data.dtype}")
-            self.gguf_writer.add_tensor(new_name, data)
-
 
 @Model.register("BaichuanForCausalLM", "BaiChuanForCausalLM")
 class BaichuanModel(Model):
@@ -1133,66 +1083,33 @@ class BaichuanModel(Model):
         self.gguf_writer.add_head_count(head_count)
         self.gguf_writer.add_head_count_kv(head_count_kv)
         self.gguf_writer.add_layer_norm_rms_eps(self.hparams["rms_norm_eps"])
+        self.gguf_writer.add_file_type(self.ftype)
 
         if self.hparams.get("rope_scaling") is not None and "factor" in self.hparams["rope_scaling"]:
             if self.hparams["rope_scaling"].get("type") == "linear":
                 self.gguf_writer.add_rope_scaling_type(gguf.RopeScalingType.LINEAR)
                 self.gguf_writer.add_rope_scaling_factor(self.hparams["rope_scaling"]["factor"])
 
-    def write_tensors(self):
-        # Collect tensors from generator object
-        model_kv = dict(self.get_tensors())
-        block_count = self.hparams["num_hidden_layers"]
+    def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
         head_count = self.hparams["num_attention_heads"]
-        tensor_map = gguf.get_tensor_name_map(self.model_arch, block_count)
         head_count_kv = self.hparams.get("num_key_value_heads", head_count)
 
-        for i in range(block_count):
-            if (w := model_kv.get(f"model.layers.{i}.self_attn.W_pack.weight")) is not None:
-                logger.info(f"Unpacking and permuting layer {i}")
-                model_kv[f"model.layers.{i}.self_attn.q_proj.weight"] = \
-                    self._reverse_hf_permute_part(w, 0, head_count, head_count)
-                model_kv[f"model.layers.{i}.self_attn.k_proj.weight"] = \
-                    self._reverse_hf_permute_part(w, 1, head_count, head_count_kv)
-                model_kv[f"model.layers.{i}.self_attn.v_proj.weight"] = \
-                    self._reverse_hf_part(w, 2)
-                del model_kv[f"model.layers.{i}.self_attn.W_pack.weight"]
+        tensors: list[tuple[str, Tensor]] = []
 
-        for name, data_torch in model_kv.items():
-            # we don't need these
-            if name.endswith(".rotary_emb.inv_freq"):
-                continue
+        if bid is not None and name == f"model.layers.{bid}.self_attn.W_pack.weight":
+            logger.info(f"Unpacking and permuting layer {bid}")
+            tensors = [
+                (self.format_tensor_name(gguf.MODEL_TENSOR.ATTN_Q, bid),
+                    self._reverse_hf_permute_part(data_torch, 0, head_count, head_count)),
+                (self.format_tensor_name(gguf.MODEL_TENSOR.ATTN_K, bid),
+                    self._reverse_hf_permute_part(data_torch, 1, head_count, head_count_kv)),
+                (self.format_tensor_name(gguf.MODEL_TENSOR.ATTN_V, bid),
+                    self._reverse_hf_part(data_torch, 2)),
+            ]
+        else:
+            tensors = [(self.map_tensor_name(name), data_torch)]
 
-            old_dtype = data_torch.dtype
-
-            # convert any unsupported data types to float32
-            if data_torch.dtype not in (torch.float16, torch.float32):
-                data_torch = data_torch.to(torch.float32)
-
-            data = data_torch.squeeze().numpy()
-
-            # map tensor names
-            new_name = tensor_map.get_name(name, try_suffixes=(".weight", ".bias"))
-            if new_name is None:
-                raise ValueError(f"Can not map tensor {name!r}")
-
-            n_dims = len(data.shape)
-            data_dtype = data.dtype
-
-            # if f32 desired, convert any float16 to float32
-            if self.ftype == 0 and data_dtype == np.float16:
-                data = data.astype(np.float32)
-
-            # TODO: Why cant we use these float16 as-is? There should be not reason to store float16 as float32
-            if self.ftype == 1 and data_dtype == np.float16 and n_dims == 1:
-                data = data.astype(np.float32)
-
-            # if f16 desired, convert any float32 2-dim weight tensors to float16
-            if self.ftype == 1 and data_dtype == np.float32 and name.endswith(".weight") and n_dims == 2:
-                data = data.astype(np.float16)
-
-            logger.info(f"{name} -> {new_name}, n_dims = {n_dims}, {old_dtype} --> {data.dtype}")
-            self.gguf_writer.add_tensor(new_name, data)
+        return tensors
 
     def _reverse_hf_permute(self, weights: Tensor, n_head: int, n_kv_head: int | None = None) -> Tensor:
         if n_kv_head is not None and n_head != n_kv_head:
@@ -1224,7 +1141,7 @@ class XverseModel(Model):
         dir_model = self.dir_model
         hparams = self.hparams
 
-        tokens: list[bytearray] = []
+        tokens: list[bytes] = []
         toktypes: list[int] = []
 
         from transformers import AutoTokenizer
@@ -1290,61 +1207,26 @@ class XverseModel(Model):
         self.gguf_writer.add_head_count(head_count)
         self.gguf_writer.add_head_count_kv(head_count_kv)
         self.gguf_writer.add_layer_norm_rms_eps(self.hparams["rms_norm_eps"])
+        self.gguf_writer.add_file_type(self.ftype)
 
         if self.hparams.get("rope_scaling") is not None and "factor" in self.hparams["rope_scaling"]:
             if self.hparams["rope_scaling"].get("type") == "linear":
                 self.gguf_writer.add_rope_scaling_type(gguf.RopeScalingType.LINEAR)
                 self.gguf_writer.add_rope_scaling_factor(self.hparams["rope_scaling"]["factor"])
 
-    def write_tensors(self):
-        # Collect tensors from generator object
-        model_kv = dict(self.get_tensors())
-        block_count = self.hparams["num_hidden_layers"]
+    def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
+        del bid  # unused
+
         head_count = self.hparams["num_attention_heads"]
-        tensor_map = gguf.get_tensor_name_map(self.model_arch, block_count)
         head_count_kv = self.hparams.get("num_key_value_heads", head_count)
 
-        for name, data_torch in model_kv.items():
-            # we don't need these
-            if name.endswith(".rotary_emb.inv_freq"):
-                continue
+        # HF models permute some of the tensors, so we need to undo that
+        if name.endswith("q_proj.weight"):
+            data_torch = self._reverse_hf_permute(data_torch, head_count, head_count)
+        if name.endswith("k_proj.weight"):
+            data_torch = self._reverse_hf_permute(data_torch, head_count, head_count_kv)
 
-            old_dtype = data_torch.dtype
-
-            # convert any unsupported data types to float32
-            if data_torch.dtype not in (torch.float16, torch.float32):
-                data_torch = data_torch.to(torch.float32)
-
-            # HF models permute some of the tensors, so we need to undo that
-            if name.endswith(("q_proj.weight")):
-                data_torch = self._reverse_hf_permute(data_torch, head_count, head_count)
-            if name.endswith(("k_proj.weight")):
-                data_torch = self._reverse_hf_permute(data_torch, head_count, head_count_kv)
-
-            data = data_torch.squeeze().numpy()
-
-            # map tensor names
-            new_name = tensor_map.get_name(name, try_suffixes=(".weight", ".bias"))
-            if new_name is None:
-                raise ValueError(f"Can not map tensor {name!r}")
-
-            n_dims = len(data.shape)
-            data_dtype = data.dtype
-
-            # if f32 desired, convert any float16 to float32
-            if self.ftype == 0 and data_dtype == np.float16:
-                data = data.astype(np.float32)
-
-            # TODO: Why cant we use these float16 as-is? There should be not reason to store float16 as float32
-            if self.ftype == 1 and data_dtype == np.float16 and n_dims == 1:
-                data = data.astype(np.float32)
-
-            # if f16 desired, convert any float32 2-dim weight tensors to float16
-            if self.ftype == 1 and data_dtype == np.float32 and name.endswith(".weight") and n_dims == 2:
-                data = data.astype(np.float16)
-
-            logger.info(f"{name} -> {new_name}, n_dims = {n_dims}, {old_dtype} --> {data.dtype}")
-            self.gguf_writer.add_tensor(new_name, data)
+        return [(self.map_tensor_name(name), data_torch)]
 
     def _reverse_hf_permute(self, weights: Tensor, n_head: int, n_kv_head: int | None = None) -> Tensor:
         if n_kv_head is not None and n_head != n_kv_head:
@@ -1384,71 +1266,31 @@ class FalconModel(Model):
         self.gguf_writer.add_layer_norm_eps(self.hparams["layer_norm_epsilon"])
         self.gguf_writer.add_file_type(self.ftype)
 
-    def write_tensors(self):
-        block_count = self.hparams.get("num_hidden_layers")
-        if block_count is None:
-            block_count = self.hparams["n_layer"]  # old name
+    def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
+        del bid  # unused
 
-        n_head = self.hparams.get("num_attention_heads")
-        if n_head is None:
-            n_head = self.hparams["n_head"]  # old name
+        # QKV tensor transform
+        # The original query_key_value tensor contains n_head_kv "kv groups",
+        # each consisting of n_head/n_head_kv query weights followed by one key
+        # and one value weight (shared by all query heads in the kv group).
+        # This layout makes it a big pain to work with in GGML.
+        # So we rearrange them here,, so that we have n_head query weights
+        # followed by n_head_kv key weights followed by n_head_kv value weights,
+        # in contiguous fashion.
+        # ref: https://github.com/jploski/ggml/blob/falcon40b/examples/falcon/convert-hf-to-ggml.py
 
-        n_head_kv = self.hparams.get("num_kv_heads")
-        if n_head_kv is None:
-            n_head_kv = self.hparams.get("n_head_kv", 1)  # old name
+        if "query_key_value" in name:
+            n_head = self.find_hparam(["num_attention_heads", "n_head"])
+            n_head_kv = self.find_hparam(["num_kv_heads", "n_head_kv"], optional=True) or 1
+            head_dim = self.hparams["hidden_size"] // n_head
 
-        head_dim = self.hparams["hidden_size"] // n_head
-        tensor_map = gguf.get_tensor_name_map(self.model_arch, block_count)
+            qkv = data_torch.view(n_head_kv, n_head // n_head_kv + 2, head_dim, head_dim * n_head)
+            q = qkv[:, :-2].reshape(n_head * head_dim, head_dim * n_head)
+            k = qkv[:, [-2]].reshape(n_head_kv * head_dim, head_dim * n_head)
+            v = qkv[:, [-1]].reshape(n_head_kv * head_dim, head_dim * n_head)
+            data_torch = torch.cat((q, k, v)).reshape_as(data_torch)
 
-        for name, data_torch in self.get_tensors():
-            old_dtype = data_torch.dtype
-
-            # convert any unsupported data types to float32
-            if data_torch.dtype not in (torch.float16, torch.float32):
-                data_torch = data_torch.to(torch.float32)
-
-            # QKV tensor transform
-            # The original query_key_value tensor contains n_head_kv "kv groups",
-            # each consisting of n_head/n_head_kv query weights followed by one key
-            # and one value weight (shared by all query heads in the kv group).
-            # This layout makes it a big pain to work with in GGML.
-            # So we rearrange them here,, so that we have n_head query weights
-            # followed by n_head_kv key weights followed by n_head_kv value weights,
-            # in contiguous fashion.
-            # ref: https://github.com/jploski/ggml/blob/falcon40b/examples/falcon/convert-hf-to-ggml.py
-
-            if "query_key_value" in name:
-                qkv = data_torch.view(n_head_kv, n_head // n_head_kv + 2, head_dim, head_dim * n_head)
-                q = qkv[:, :-2].reshape(n_head * head_dim, head_dim * n_head)
-                k = qkv[:, [-2]].reshape(n_head_kv * head_dim, head_dim * n_head)
-                v = qkv[:, [-1]].reshape(n_head_kv * head_dim, head_dim * n_head)
-                data_torch = torch.cat((q, k, v)).reshape_as(data_torch)
-
-            data = data_torch.squeeze().numpy()
-
-            # map tensor names
-            new_name = tensor_map.get_name(name, try_suffixes=(".weight", ".bias"))
-            if new_name is None:
-                raise ValueError(f"Can not map tensor {name!r}")
-
-            n_dims = len(data.shape)
-            data_dtype = data.dtype
-
-            # if f32 desired, convert any float16 to float32
-            if self.ftype == 0 and data_dtype == np.float16:
-                data = data.astype(np.float32)
-
-            # TODO: Why cant we use these float16 as-is? There should be not reason to store float16 as float32
-            if self.ftype == 1 and data_dtype == np.float16 and n_dims == 1:
-                data = data.astype(np.float32)
-
-            # if f16 desired, convert any float32 2-dim weight tensors to float16
-            if self.ftype == 1 and data_dtype == np.float32 and name.endswith(".weight") and n_dims == 2:
-                data = data.astype(np.float16)
-
-            logger.info(f"{new_name}, n_dims = {n_dims}, {old_dtype} --> {data.dtype}")
-
-            self.gguf_writer.add_tensor(new_name, data)
+        return [(self.map_tensor_name(name), data_torch)]
 
 
 @Model.register("GPTBigCodeForCausalLM")
@@ -1504,7 +1346,7 @@ class RefactModel(Model):
         self.gguf_writer.add_layer_norm_rms_eps(self.hparams["layer_norm_epsilon"])
         self.gguf_writer.add_file_type(self.ftype)
 
-    def write_tensors(self):
+    def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
         hidden_dim = self.hparams["n_embd"]
         inner_dim = 4 * hidden_dim
         hidden_dim = int(2 * inner_dim / 3)
@@ -1513,106 +1355,23 @@ class RefactModel(Model):
         n_head = self.hparams["n_head"]
         n_head_kv = 1
         head_dim = self.hparams["n_embd"] // n_head
-        block_count = self.hparams["n_layer"]
 
-        tensor_map = gguf.get_tensor_name_map(self.model_arch, block_count)
+        tensors: list[tuple[str, Tensor]] = []
 
-        tensors = dict(self.get_tensors())
-        for i in range(block_count):
-            if (w := tensors.get(f"transformer.h.{i}.attn.kv.weight")) is not None:
-                tensors[f"model.layers.{i}.self_attn.k_proj.weight"] = w[:n_head_kv * head_dim]
-                tensors[f"model.layers.{i}.self_attn.v_proj.weight"] = w[n_head_kv * head_dim:]
-                del tensors[f"transformer.h.{i}.attn.kv.weight"]
-            if (w := tensors.get(f"transformer.h.{i}.attn.q.weight")) is not None:
-                tensors[f"model.layers.{i}.self_attn.q_proj.weight"] = w
-                del tensors[f"transformer.h.{i}.attn.q.weight"]
-            if (w := tensors.get(f"transformer.h.{i}.mlp.gate_up_proj.weight")) is not None:
-                tensors[f"model.layers.{i}.mlp.gate_proj.weight"] = w[:ff_dim]
-                tensors[f"model.layers.{i}.mlp.up_proj.weight"] = w[ff_dim:]
-                del tensors[f"transformer.h.{i}.mlp.gate_up_proj.weight"]
+        if bid is not None:
+            if name == f"transformer.h.{bid}.attn.kv.weight":
+                tensors.append((self.format_tensor_name(gguf.MODEL_TENSOR.ATTN_K, bid), data_torch[:n_head_kv * head_dim]))
+                tensors.append((self.format_tensor_name(gguf.MODEL_TENSOR.ATTN_V, bid), data_torch[n_head_kv * head_dim:]))
+            elif name == f"transformer.h.{bid}.attn.q.weight":
+                tensors.append((self.format_tensor_name(gguf.MODEL_TENSOR.ATTN_Q, bid), data_torch))
+            elif name == f"transformer.h.{bid}.mlp.gate_up_proj.weight":
+                tensors.append((self.format_tensor_name(gguf.MODEL_TENSOR.FFN_GATE, bid), data_torch[:ff_dim]))
+                tensors.append((self.format_tensor_name(gguf.MODEL_TENSOR.FFN_UP, bid), data_torch[ff_dim:]))
 
-        for name, data_torch in tensors.items():
-            old_dtype = data_torch.dtype
+        if len(tensors) == 0:
+            tensors.append((self.map_tensor_name(name), data_torch))
 
-            # convert any unsupported data types to float32
-            if data_torch.dtype not in (torch.float16, torch.float32):
-                data_torch = data_torch.to(torch.float32)
-
-            data = data_torch.squeeze().numpy()
-
-            # map tensor names
-            new_name = tensor_map.get_name(name, try_suffixes=(".weight",))
-            if new_name is None:
-                raise ValueError(f"Can not map tensor {name!r}")
-
-            n_dims = len(data.shape)
-            data_dtype = data.dtype
-
-            # if f32 desired, convert any float16 to float32
-            if self.ftype == 0 and data_dtype == np.float16:
-                data = data.astype(np.float32)
-
-            # TODO: Why cant we use these float16 as-is? There should be not reason to store float16 as float32
-            if self.ftype == 1 and data_dtype == np.float16 and n_dims == 1:
-                data = data.astype(np.float32)
-
-            # if f16 desired, convert any float32 2-dim weight tensors to float16
-            if self.ftype == 1 and data_dtype == np.float32 and name.endswith(".weight") and n_dims == 2:
-                data = data.astype(np.float16)
-
-            logger.info(f"{new_name}, n_dims = {n_dims}, {old_dtype} --> {data.dtype}")
-
-            self.gguf_writer.add_tensor(new_name, data)
-
-
-@Model.register("PersimmonForCausalLM")
-class PersimmonModel(Model):
-    model_arch = gguf.MODEL_ARCH.PERSIMMON
-
-    def set_gguf_parameters(self):
-        block_count = self.hparams.get("num_layers", self.hparams.get("num_hidden_layers"))
-        head_count = self.hparams["num_attention_heads"]
-        head_count_kv = head_count
-        hidden_size = self.hparams["hidden_size"]
-
-        self.gguf_writer.add_name('persimmon-8b-chat')
-        self.gguf_writer.add_context_length(self.hparams["max_position_embeddings"])
-        self.gguf_writer.add_embedding_length(hidden_size)
-        self.gguf_writer.add_block_count(block_count)
-        self.gguf_writer.add_feed_forward_length(self.hparams["intermediate_size"])
-
-        # NOTE: not sure about this change - why does the model not have a rope dimension count when it is smaller
-        #       than the head size?
-        #       ref: https://github.com/ggerganov/llama.cpp/pull/4889
-        # self.gguf_writer.add_rope_dimension_count(hidden_size // head_count)
-        self.gguf_writer.add_rope_dimension_count(hidden_size // head_count // 2)
-
-        self.gguf_writer.add_head_count(head_count)
-        self.gguf_writer.add_head_count_kv(head_count_kv)
-        self.gguf_writer.add_rope_freq_base(self.hparams["rope_theta"])
-        self.gguf_writer.add_layer_norm_eps(self.hparams["layer_norm_eps"])
-
-    def set_vocab(self):
-        self._set_vocab_sentencepiece()
-        # self.gguf_writer.add_bos_token_id(71013)
-        # self.gguf_writer.add_eos_token_id(71013)
-
-    def write_tensors(self):
-        block_count = self.hparams.get("num_layers", self.hparams.get("num_hidden_layers"))
-        tensor_map = gguf.get_tensor_name_map(self.model_arch, block_count)
-
-        for name, data_torch in self.get_tensors():
-            if name.endswith(".self_attention.rotary_emb.inv_freq"):
-                continue
-            old_dtype = data_torch.dtype
-            # TODO: FP16 conversion produces garbage outputs. (Q8_0 does not, so..?)
-            data = data_torch.to(torch.float32).squeeze().numpy()
-            new_name = tensor_map.get_name(name, try_suffixes=(".weight", ".bias"))
-            if new_name is None:
-                raise ValueError(f"Can not map tensor {name!r}")
-            n_dims = len(data.shape)
-            logger.info(f"{new_name}, n_dims = {n_dims}, {old_dtype} --> {data.dtype}")
-            self.gguf_writer.add_tensor(new_name, data)
+        return tensors
 
 
 @Model.register("StableLmForCausalLM", "StableLMEpochForCausalLM", "LlavaStableLMEpochForCausalLM")
@@ -1640,61 +1399,42 @@ class StableLMModel(Model):
         self.gguf_writer.add_head_count_kv(hparams["num_key_value_heads"])
         self.gguf_writer.add_parallel_residual(hparams["use_parallel_residual"] if "use_parallel_residual" in hparams else True)
         self.gguf_writer.add_layer_norm_eps(self.find_hparam(["layer_norm_eps", "norm_eps"]))
+        self.gguf_writer.add_file_type(self.ftype)
 
-    def write_tensors(self):
-        block_count = self.hparams.get("n_layers", self.hparams.get("num_hidden_layers", self.hparams.get("n_layer")))
-        tensor_map = gguf.get_tensor_name_map(self.model_arch, block_count)
-        n_head = self.hparams.get("num_attention_heads")
-        n_kv_head = self.hparams.get("num_key_value_heads")
-        q_norms = dict()
-        k_norms = dict()
-        for name, data_torch in self.get_tensors():
-            # we don't need these
-            if name.endswith((".attention.masked_bias", ".attention.bias", ".attention.rotary_emb.inv_freq")):
-                continue
+    _q_norms: list[dict[str, Tensor]] | None = None
+    _k_norms: list[dict[str, Tensor]] | None = None
 
-            old_dtype = data_torch.dtype
+    def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
+        n_head = self.hparams["num_attention_heads"]
+        n_kv_head = self.hparams["num_key_value_heads"]
 
-            # convert any unsupported data types to float32
-            if data_torch.dtype not in (torch.float16, torch.float32):
-                data_torch = data_torch.to(torch.float32)
+        if name.find("q_layernorm.norms") != -1:
+            assert bid is not None
 
-            data = data_torch.squeeze().numpy()
-            n_dims = len(data.shape)
-            if name.find("q_layernorm.norms") != -1:
-                q_norms[name] = data
-                if len(q_norms) >= (block_count * n_head):
-                    self._stack_qk_norm(block_count, name, tensor_map, n_head, q_norms, n_dims, layer_name="q_layernorm")
-                continue
-            if name.find("k_layernorm.norms") != -1:
-                k_norms[name] = data
-                if len(k_norms) >= (block_count * n_kv_head):
-                    self._stack_qk_norm(block_count, name, tensor_map, n_kv_head, k_norms, n_dims, layer_name="k_layernorm")
-                continue
+            if self._q_norms is None:
+                self._q_norms = [{} for _ in range(self.block_count)]
 
-            # map tensor names
-            new_name = tensor_map.get_name(name, try_suffixes=(".weight", ".bias"))
-            if new_name is None:
-                raise ValueError(f"Can not map tensor {name!r}")
+            self._q_norms[bid][name] = data_torch
 
-            n_dims = len(data.shape)
-            data_dtype = data.dtype
+            if len(self._q_norms[bid]) >= n_head:
+                return self._stack_qk_norm(bid, n_head, self._q_norms[bid], "q_layernorm")
+            else:
+                return []
 
-            # if f32 desired, convert any float16 to float32
-            if self.ftype == 0 and data_dtype == np.float16:
-                data = data.astype(np.float32)
+        if name.find("k_layernorm.norms") != -1:
+            assert bid is not None
 
-            # TODO: Why cant we use these float16 as-is? There should be not reason to store float16 as float32
-            if self.ftype == 1 and data_dtype == np.float16 and (n_dims == 1 or new_name.endswith("_norm.weight")):
-                data = data.astype(np.float32)
+            if self._k_norms is None:
+                self._k_norms = [{} for _ in range(self.block_count)]
 
-            # if f16 desired, convert any float32 2-dim weight tensors to float16
-            if self.ftype == 1 and data_dtype == np.float32 and name.endswith(".weight") and not new_name.endswith("_norm.weight") and n_dims == 2:
-                data = data.astype(np.float16)
+            self._k_norms[bid][name] = data_torch
 
-            logger.debug(f"{new_name}, n_dims = {n_dims}, {old_dtype} --> {data.dtype}")
+            if len(self._k_norms[bid]) >= n_kv_head:
+                return self._stack_qk_norm(bid, n_kv_head, self._k_norms[bid], "k_layernorm")
+            else:
+                return []
 
-            self.gguf_writer.add_tensor(new_name, data)
+        return [(self.map_tensor_name(name), data_torch)]
 
     def _stack_qk_norm(self, bid: int, n_head: int, norms: dict[str, Tensor], layer_name: str = "q_layernorm"):
         datas: list[Tensor] = []
@@ -1766,55 +1506,58 @@ class LlamaModel(Model):
                 self.gguf_writer.add_rope_scaling_type(gguf.RopeScalingType.LINEAR)
                 self.gguf_writer.add_rope_scaling_factor(self.hparams["rope_scaling"]["factor"])
 
-    # Same as super class, but permuting q_proj, k_proj
-    def write_tensors(self):
-        block_count = self.hparams.get("n_layers", self.hparams.get("num_hidden_layers", self.hparams.get("n_layer")))
-        tensor_map = gguf.get_tensor_name_map(self.model_arch, block_count)
-        n_head = self.hparams.get("num_attention_heads")
+        tokenizer_config_file = self.dir_model / 'tokenizer_config.json'
+        if tokenizer_config_file.is_file():
+            with open(tokenizer_config_file, "r", encoding="utf-8") as f:
+                tokenizer_config_json = json.load(f)
+                if "add_prefix_space" in tokenizer_config_json:
+                    self.gguf_writer.add_add_space_prefix(tokenizer_config_json["add_prefix_space"])
+
+        # Apply to granite small models only
+        if self.hparams.get("vocab_size", 32000) == 49152:
+            self.gguf_writer.add_add_bos_token(False)
+
+    @staticmethod
+    def permute(weights: Tensor, n_head: int, n_head_kv: int | None):
+        if n_head_kv is not None and n_head != n_head_kv:
+            n_head = n_head_kv
+        return (weights.reshape(n_head, 2, weights.shape[0] // n_head // 2, *weights.shape[1:])
+                .swapaxes(1, 2)
+                .reshape(weights.shape))
+
+    _experts: list[dict[str, Tensor]] | None = None
+
+    def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
+        n_head = self.hparams["num_attention_heads"]
         n_kv_head = self.hparams.get("num_key_value_heads")
-        n_experts = self.hparams.get("num_local_experts")
-        experts = dict()
-        for name, data_torch in self.get_tensors():
-            # we don't need these
-            if name.endswith((".attention.masked_bias", ".attention.bias", ".rotary_emb.inv_freq")):
-                continue
 
-            old_dtype = data_torch.dtype
+        if name.endswith(("q_proj.weight", "q_proj.bias")):
+            data_torch = LlamaModel.permute(data_torch, n_head, n_head)
+        if name.endswith(("k_proj.weight", "k_proj.bias")):
+            data_torch = LlamaModel.permute(data_torch, n_head, n_kv_head)
 
-            # convert any unsupported data types to float32
-            if data_torch.dtype not in (torch.float16, torch.float32):
-                data_torch = data_torch.to(torch.float32)
+        # process the experts separately
+        if name.find("block_sparse_moe.experts") != -1:
+            n_experts = self.hparams["num_local_experts"]
 
-            data = data_torch.numpy()
+            assert bid is not None
 
-            if name.endswith("q_proj.weight"):
-                data = permute(data, n_head, n_head)
-            if name.endswith("k_proj.weight"):
-                data = permute(data, n_head, n_kv_head)
+            if self._experts is None:
+                self._experts = [{} for _ in range(self.block_count)]
 
-            data = data.squeeze()
+            self._experts[bid][name] = data_torch
 
-            # process the experts separately
-            if name.find("block_sparse_moe.experts") != -1:
-                experts[name] = data
-                if len(experts) >= n_experts:
-                    # merge the experts into a single 3d tensor
-                    for bid in range(block_count):
-                        for wid in range(1, 4):
-                            full = True
-                            for xid in range(n_experts):
-                                ename = f"model.layers.{bid}.block_sparse_moe.experts.{xid}.w{wid}.weight"
-                                if ename not in experts:
-                                    full = False
-                                    break
-                            if not full:
-                                continue
+            if len(self._experts[bid]) >= n_experts * 3:
+                tensors: list[tuple[str, Tensor]] = []
 
-                            datas = []
-                            for xid in range(n_experts):
-                                ename = f"model.layers.{bid}.block_sparse_moe.experts.{xid}.w{wid}.weight"
-                                datas.append(experts[ename])
-                                del experts[ename]
+                # merge the experts into a single 3d tensor
+                for wid in ["w1", "w2", "w3"]:
+                    datas: list[Tensor] = []
+
+                    for xid in range(n_experts):
+                        ename = f"model.layers.{bid}.block_sparse_moe.experts.{xid}.{wid}.weight"
+                        datas.append(self._experts[bid][ename])
+                        del self._experts[bid][ename]
 
                     data_torch = torch.stack(datas, dim=0)
 
@@ -1949,49 +1692,18 @@ class GrokModel(Model):
                         datas.append(self._experts[bid][ename])
                         del self._experts[bid][ename]
 
-                            data = np.stack(datas, axis=0)
-                            data_dtype = data.dtype
+                    data_torch = torch.stack(datas, dim=0)
 
-                            if self.ftype == 0 and data_dtype == np.float16:
-                                data = data.astype(np.float32)
+                    merged_name = f"transformer.decoder_layer.{bid}.moe.{wid}.weight"
 
-                            if self.ftype == 1 and data_dtype == np.float32:
-                                data = data.astype(np.float16)
+                    new_name = self.map_tensor_name(merged_name)
 
-                            merged_name = f"transformer.decoder_layer.{bid}.moe.{wid}.weight"
+                    tensors.append((new_name, data_torch))
+                return tensors
+            else:
+                return []
 
-                            new_name = tensor_map.get_name(merged_name, try_suffixes=(".weight", ".bias"))
-                            if new_name is None:
-                                raise ValueError(f"Can not map tensor {name!r}")
-
-                            logger.info(f"{new_name}, n_dims = {len(data.shape)}, shape = {data.shape} --> {data.dtype}")
-
-                            self.gguf_writer.add_tensor(new_name, data)
-                continue
-
-            # map tensor names
-            new_name = tensor_map.get_name(name, try_suffixes=(".weight", ".bias"))
-            if new_name is None:
-                raise ValueError(f"Can not map tensor {name!r}")
-
-            n_dims = len(data.shape)
-            data_dtype = data.dtype
-
-            # if f32 desired, convert any float16 to float32
-            if self.ftype == 0 and data_dtype == np.float16:
-                data = data.astype(np.float32)
-
-            # TODO: Why cant we use these float16 as-is? There should be not reason to store float16 as float32
-            if self.ftype == 1 and data_dtype == np.float16 and n_dims == 1:
-                data = data.astype(np.float32)
-
-            # if f16 desired, convert any float32 2-dim weight tensors to float16
-            if self.ftype == 1 and data_dtype == np.float32 and name.endswith(".weight") and n_dims == 2:
-                data = data.astype(np.float16)
-
-            logger.info(f"{new_name}, n_dims = {n_dims}, {old_dtype} --> {data.dtype}")
-
-            self.gguf_writer.add_tensor(new_name, data)
+        return [(self.map_tensor_name(name), data_torch)]
 
 
 @Model.register("DbrxForCausalLM")
@@ -2022,30 +1734,30 @@ class DbrxModel(Model):
         self.gguf_writer.add_file_type(self.ftype)
         logger.info(f"gguf: file type = {self.ftype}")
 
-    def write_tensors(self):
-        block_count = self.hparams.get("n_layers")
-        tensor_map = gguf.get_tensor_name_map(self.model_arch, block_count)
-        for name, data_torch in self.get_tensors():
-            n_expert = self.hparams["ffn_config"]["moe_num_experts"]
-            n_ff = self.hparams["ffn_config"]["ffn_hidden_size"]
-            n_embd = self.hparams["d_model"]
+    def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
+        del bid  # unused
 
-            # Specific behavior for experts tensors: suffix .weight, view as 3D and transpose
-            # original implementation expects (n_expert, n_ff, n_embd) for all experts weights
-            # But llama.cpp moe graph works differently
-            # AND the dimensions in ggml are typically in the reverse order of the pytorch dimensions
-            # so (n_expert, n_ff, n_embd) in pytorch is {n_embd, n_ff, n_expert} in ggml_tensor
-            exp_tensor_names = {"ffn.experts.mlp.w1": None,       # LLM_TENSOR_FFN_GATE_EXPS ggml_tensor->ne{n_embd, n_ff,   n_expert}
-                                "ffn.experts.mlp.w2": (0, 2, 1),  # LLM_TENSOR_FFN_DOWN_EXPS ggml_tensor->ne{n_ff,   n_embd, n_expert}
-                                "ffn.experts.mlp.v1": None}       # LLM_TENSOR_FFN_UP_EXPS   ggml_tensor->ne{n_embd, n_ff,   n_expert}
-            experts = False
-            for exp_tensor_name in exp_tensor_names.keys():
-                if name.find(exp_tensor_name) != -1 and name.find(".weight") == -1:
-                    experts = True
-                    data_torch = data_torch.view(n_expert, n_ff, n_embd)
-                    if (permute_tensor := exp_tensor_names[exp_tensor_name]) is not None:
-                        data_torch = data_torch.permute(*permute_tensor)
-                    break
+        n_expert = self.hparams["ffn_config"]["moe_num_experts"]
+        n_ff = self.hparams["ffn_config"]["ffn_hidden_size"]
+        n_embd = self.hparams["d_model"]
+
+        # Specific behavior for experts tensors: suffix .weight, view as 3D and transpose
+        # original implementation expects (n_expert, n_ff, n_embd) for all experts weights
+        # But llama.cpp moe graph works differently
+        # AND the dimensions in ggml are typically in the reverse order of the pytorch dimensions
+        # so (n_expert, n_ff, n_embd) in pytorch is {n_embd, n_ff, n_expert} in ggml_tensor
+        exp_tensor_names = {"ffn.experts.mlp.w1": None,       # LLM_TENSOR_FFN_GATE_EXPS ggml_tensor->ne{n_embd, n_ff,   n_expert}
+                            "ffn.experts.mlp.w2": (0, 2, 1),  # LLM_TENSOR_FFN_DOWN_EXPS ggml_tensor->ne{n_ff,   n_embd, n_expert}
+                            "ffn.experts.mlp.v1": None}       # LLM_TENSOR_FFN_UP_EXPS   ggml_tensor->ne{n_embd, n_ff,   n_expert}
+        experts = False
+
+        for exp_tensor_name in exp_tensor_names.keys():
+            if name.find(exp_tensor_name) != -1 and name.find(".weight") == -1:
+                experts = True
+                data_torch = data_torch.view(n_expert, n_ff, n_embd)
+                if (permute_tensor := exp_tensor_names[exp_tensor_name]) is not None:
+                    data_torch = data_torch.permute(*permute_tensor)
+                break
 
         # map tensor names
         # In MoE models the ffn tensors are typically most of the model weights,
@@ -2092,53 +1804,19 @@ class MiniCPMModel(Model):
             .reshape(weights.shape)
         )
 
-    def write_tensors(self):
-        block_count = self.hparams.get("n_layers", self.hparams.get("num_hidden_layers", self.hparams.get("n_layer")))
-        tensor_map = gguf.get_tensor_name_map(self.model_arch, block_count)
-        n_head = self.hparams.get("num_attention_heads")
+    def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
+        del bid  # unused
+
+        n_head = self.hparams["num_attention_heads"]
         n_kv_head = self.hparams.get("num_key_value_heads")
-        for name, data_torch in self.get_tensors():
-            # we don't need these
-            if name.endswith((".attention.masked_bias", ".attention.bias", ".attention.rotary_emb.inv_freq")):
-                continue
 
-            old_dtype = data_torch.dtype
+        # HF models permute some of the tensors, so we need to undo that
+        if name.endswith(("q_proj.weight")):
+            data_torch = self._reverse_hf_permute(data_torch, n_head, n_head)
+        if name.endswith(("k_proj.weight")):
+            data_torch = self._reverse_hf_permute(data_torch, n_head, n_kv_head)
 
-            # convert any unsupported data types to float32
-            if data_torch.dtype not in (torch.float16, torch.float32):
-                data_torch = data_torch.to(torch.float32)
-
-            # HF models permute some of the tensors, so we need to undo that
-            if name.endswith(("q_proj.weight")):
-                data_torch = self._reverse_hf_permute(data_torch, n_head, n_head)
-            if name.endswith(("k_proj.weight")):
-                data_torch = self._reverse_hf_permute(data_torch, n_head, n_kv_head)
-
-            data = data_torch.squeeze().numpy()
-
-            # map tensor names
-            new_name = tensor_map.get_name(name, try_suffixes=(".weight", ".bias"))
-            if new_name is None:
-                raise ValueError(f"Can not map tensor {name!r}")
-
-            n_dims = len(data.shape)
-            data_dtype = data.dtype
-
-            # if f32 desired, convert any float16 to float32
-            if self.ftype == 0 and data_dtype == np.float16:
-                data = data.astype(np.float32)
-
-            # TODO: Why cant we use these float16 as-is? There should be not reason to store float16 as float32
-            if self.ftype == 1 and data_dtype == np.float16 and n_dims == 1:
-                data = data.astype(np.float32)
-
-            # if f16 desired, convert any float32 2-dim weight tensors to float16
-            if self.ftype == 1 and data_dtype == np.float32 and name.endswith(".weight") and n_dims == 2:
-                data = data.astype(np.float16)
-
-            logger.info(f"{new_name}, n_dims = {n_dims}, {old_dtype} --> {data.dtype}")
-
-            self.gguf_writer.add_tensor(new_name, data)
+        return [(self.map_tensor_name(name), data_torch)]
 
 
 @Model.register("QWenLMHeadModel")
@@ -2180,46 +1858,7 @@ class QwenModel(Model):
         self.gguf_writer.add_rope_dimension_count(self.hparams["hidden_size"] // self.hparams["num_attention_heads"])
         self.gguf_writer.add_head_count(self.hparams["num_attention_heads"])
         self.gguf_writer.add_layer_norm_rms_eps(self.hparams["layer_norm_epsilon"])
-
-    def write_tensors(self):
-        block_count = self.hparams["num_hidden_layers"]
-        model_kv = dict(self.get_tensors())
-        tensor_map = gguf.get_tensor_name_map(self.model_arch, block_count)
-        for name, data_torch in model_kv.items():
-            # we don't need these
-            if name.endswith(".rotary_emb.inv_freq"):
-                continue
-
-            old_dtype = data_torch.dtype
-
-            # convert any unsupported data types to float32
-            if data_torch.dtype not in (torch.float16, torch.float32):
-                data_torch = data_torch.to(torch.float32)
-
-            data = data_torch.squeeze().numpy()
-
-            # map tensor names
-            new_name = tensor_map.get_name(name, try_suffixes=(".weight", ".bias"))
-            if new_name is None:
-                raise ValueError(f"Can not map tensor {name!r}")
-
-            n_dims = len(data.shape)
-            data_dtype = data.dtype
-
-            # if f32 desired, convert any float16 to float32
-            if self.ftype == 0 and data_dtype == np.float16:
-                data = data.astype(np.float32)
-
-            # TODO: Why cant we use these float16 as-is? There should be not reason to store float16 as float32
-            if self.ftype == 1 and data_dtype == np.float16 and n_dims == 1:
-                data = data.astype(np.float32)
-
-            # if f16 desired, convert any float32 2-dim weight tensors to float16
-            if self.ftype == 1 and data_dtype == np.float32 and name.endswith(".weight") and n_dims == 2:
-                data = data.astype(np.float16)
-
-            logger.info(f"{new_name}, n_dims = {n_dims}, {old_dtype} --> {data.dtype}")
-            self.gguf_writer.add_tensor(new_name, data)
+        self.gguf_writer.add_file_type(self.ftype)
 
 
 @Model.register("Qwen2ForCausalLM")
@@ -2273,16 +1912,9 @@ class Qwen2MoeModel(Model):
                         datas.append(self._experts[bid][ename])
                         del self._experts[bid][ename]
 
-                            data = np.stack(datas, axis=0)
-                            data_dtype = data.dtype
+                    data_torch = torch.stack(datas, dim=0)
 
-                            if self.ftype == 0 and data_dtype == np.float16:
-                                data = data.astype(np.float32)
-
-                            if self.ftype == 1 and data_dtype == np.float32:
-                                data = data.astype(np.float16)
-
-                            merged_name = f"model.layers.{bid}.mlp.experts.{w_name}.weight"
+                    merged_name = f"model.layers.{bid}.mlp.experts.{w_name}.weight"
 
                     new_name = self.map_tensor_name(merged_name)
 
@@ -2316,54 +1948,27 @@ class GPT2Model(Model):
         self.gguf_writer.add_layer_norm_eps(self.hparams["layer_norm_epsilon"])
         self.gguf_writer.add_file_type(self.ftype)
 
-    def write_tensors(self):
-        block_count = self.hparams.get("n_layers", self.hparams.get("num_hidden_layers", self.hparams.get("n_layer")))
-        tensor_map = gguf.get_tensor_name_map(self.model_arch, block_count)
+    def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
+        del bid  # unused
 
-        for name, data_torch in self.get_tensors():
-            # we don't need these
-            if name.endswith((".attention.masked_bias", ".attention.bias", ".attention.rotary_emb.inv_freq", ".attn.bias", ".attn.masked_bias")):
-                continue
+        tensors: list[tuple[str, Tensor]] = []
 
-            if name.endswith((".c_attn.weight", ".c_proj.weight", ".c_fc.weight", ".c_proj.weight")):
-                data_torch = data_torch.transpose(1, 0)
+        # we don't need these
+        if name.endswith((".attn.bias", ".attn.masked_bias")):
+            return tensors
 
-            old_dtype = data_torch.dtype
+        if name.endswith((".c_attn.weight", ".c_proj.weight", ".c_fc.weight", ".c_proj.weight")):
+            data_torch = data_torch.transpose(1, 0)
 
-            # convert any unsupported data types to float32
-            if data_torch.dtype not in (torch.float16, torch.float32):
-                data_torch = data_torch.to(torch.float32)
+        new_name = self.map_tensor_name(name)
 
-            data = data_torch.squeeze().numpy()
+        tensors.append((new_name, data_torch))
 
-            # map tensor names
-            new_name = tensor_map.get_name(name, try_suffixes=(".weight", ".bias"))
-            if new_name is None:
-                raise ValueError(f"Can not map tensor {name!r}")
+        # note: GPT2 output is tied to (same as) wte in original model
+        if new_name == self.format_tensor_name(gguf.MODEL_TENSOR.TOKEN_EMBD):
+            tensors.append((self.format_tensor_name(gguf.MODEL_TENSOR.OUTPUT), data_torch))
 
-            n_dims = len(data.shape)
-            data_dtype = data.dtype
-
-            # if f32 desired, convert any float16 to float32
-            if self.ftype == 0 and data_dtype == np.float16:
-                data = data.astype(np.float32)
-
-            # TODO: Why cant we use these float16 as-is? There should be not reason to store float16 as float32
-            if self.ftype == 1 and data_dtype == np.float16 and n_dims == 1:
-                data = data.astype(np.float32)
-
-            # if f16 desired, convert any float32 2-dim weight tensors to float16
-            if self.ftype == 1 and data_dtype == np.float32 and name.endswith(".weight") and n_dims == 2:
-                data = data.astype(np.float16)
-
-            logger.info(f"{new_name}, n_dims = {n_dims}, {old_dtype} --> {data.dtype}")
-
-            self.gguf_writer.add_tensor(new_name, data)
-
-            # note: GPT2 output is tied to (same as) wte in original model
-            if new_name == "token_embd.weight":
-                logger.info(f"output.weight, n_dims = {n_dims}, {old_dtype} --> {data.dtype}")
-                self.gguf_writer.add_tensor("output.weight", data)
+        return tensors
 
 
 @Model.register("PhiForCausalLM")
@@ -2402,7 +2007,8 @@ class Phi3MiniModel(Model):
         if not tokenizer_path.is_file():
             raise ValueError(f'Error: Missing {tokenizer_path}')
 
-        tokenizer = SentencePieceProcessor(str(tokenizer_path))
+        tokenizer = SentencePieceProcessor()
+        tokenizer.LoadFromFile(str(tokenizer_path))
 
         vocab_size = self.hparams.get('vocab_size', tokenizer.vocab_size())
 
@@ -2412,18 +2018,18 @@ class Phi3MiniModel(Model):
 
         for token_id in range(tokenizer.vocab_size()):
 
-            piece = tokenizer.id_to_piece(token_id)
+            piece = tokenizer.IdToPiece(token_id)
             text = piece.encode("utf-8")
-            score = tokenizer.get_score(token_id)
+            score = tokenizer.GetScore(token_id)
 
             toktype = SentencePieceTokenTypes.NORMAL
-            if tokenizer.is_unknown(token_id):
+            if tokenizer.IsUnknown(token_id):
                 toktype = SentencePieceTokenTypes.UNKNOWN
-            elif tokenizer.is_control(token_id):
+            elif tokenizer.IsControl(token_id):
                 toktype = SentencePieceTokenTypes.CONTROL
-            elif tokenizer.is_unused(token_id):
+            elif tokenizer.IsUnused(token_id):
                 toktype = SentencePieceTokenTypes.UNUSED
-            elif tokenizer.is_byte(token_id):
+            elif tokenizer.IsByte(token_id):
                 toktype = SentencePieceTokenTypes.BYTE
 
             tokens[token_id] = text
@@ -2491,20 +2097,24 @@ class Phi3MiniModel(Model):
     def set_gguf_parameters(self):
         block_count = self.find_hparam(["num_hidden_layers", "n_layer"])
 
-        rot_pct = 1.0
         n_embd = self.find_hparam(["hidden_size", "n_embd"])
         n_head = self.find_hparam(["num_attention_heads", "n_head"])
+        n_head_kv = self.find_hparam(["num_key_value_heads", "n_head_kv"])
         rms_eps = self.find_hparam(["rms_norm_eps"])
+        max_pos_embds = self.find_hparam(["n_positions", "max_position_embeddings"])
+        orig_max_pos_embds = self.find_hparam(["original_max_position_embeddings"])
+        rope_dims = n_embd // n_head
 
         self.gguf_writer.add_context_length(max_pos_embds)
         self.gguf_writer.add_rope_scaling_orig_ctx_len(orig_max_pos_embds)
         self.gguf_writer.add_embedding_length(n_embd)
-        self.gguf_writer.add_feed_forward_length(8192)
+        self.gguf_writer.add_feed_forward_length(self.find_hparam(["intermediate_size"]))
         self.gguf_writer.add_block_count(block_count)
         self.gguf_writer.add_head_count(n_head)
-        self.gguf_writer.add_head_count_kv(n_head)
+        self.gguf_writer.add_head_count_kv(n_head_kv)
         self.gguf_writer.add_layer_norm_rms_eps(rms_eps)
-        self.gguf_writer.add_rope_dimension_count(int(rot_pct * n_embd) // n_head)
+        self.gguf_writer.add_rope_dimension_count(rope_dims)
+        self.gguf_writer.add_rope_freq_base(self.find_hparam(["rope_theta"]))
         self.gguf_writer.add_file_type(self.ftype)
         self.gguf_writer.add_sliding_window(self.find_hparam(["sliding_window"]))
 
@@ -2560,6 +2170,7 @@ class PlamoModel(Model):
         self.gguf_writer.add_head_count(hparams["num_attention_heads"])
         self.gguf_writer.add_head_count_kv(5)  # hparams["num_key_value_heads"]) is wrong
         self.gguf_writer.add_layer_norm_rms_eps(hparams["rms_norm_eps"])
+        self.gguf_writer.add_file_type(self.ftype)
 
     def shuffle_attn_q_weight(self, data_torch):
         assert data_torch.size() == (5120, 5120)
@@ -2575,51 +2186,18 @@ class PlamoModel(Model):
         data_torch = torch.reshape(data_torch, (5120, 5120))
         return data_torch
 
-    def write_tensors(self):
-        block_count = self.hparams.get("num_layers", self.hparams.get("num_hidden_layers"))
-        tensor_map = gguf.get_tensor_name_map(self.model_arch, block_count)
+    def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
+        del bid  # unused
 
-        for name, data_torch in self.get_tensors():
-            if "self_attn.rotary_emb.inv_freq" in name:
-                continue
+        new_name = self.map_tensor_name(name)
 
-            # map tensor names
-            new_name = tensor_map.get_name(name, try_suffixes=(".weight", ".bias"))
-            if new_name is None:
-                raise ValueError(f"Can not map tensor {name!r}")
+        # shuffle for broadcasting of gqa in ggml_mul_mat
+        if new_name.endswith("attn_q.weight"):
+            data_torch = self.shuffle_attn_q_weight(data_torch)
+        elif new_name.endswith("attn_output.weight"):
+            data_torch = self.shuffle_attn_output_weight(data_torch)
 
-            # shuffle for broadcasting of gqa in ggml_mul_mat
-            if new_name.endswith("attn_q.weight"):
-                data_torch = self.shuffle_attn_q_weight(data_torch)
-            elif new_name.endswith("attn_output.weight"):
-                data_torch = self.shuffle_attn_output_weight(data_torch)
-
-            old_dtype = data_torch.dtype
-
-            # convert any unsupported data types to float32
-            if data_torch.dtype not in (torch.float16, torch.float32):
-                data_torch = data_torch.to(torch.float32)
-
-            data = data_torch.squeeze().numpy()
-
-            n_dims = len(data.shape)
-            data_dtype = data.dtype
-
-            # if f32 desired, convert any float16 to float32
-            if self.ftype == 0 and data_dtype == np.float16:
-                data = data.astype(np.float32)
-
-            # TODO: Why cant we use these float16 as-is? There should be not reason to store float16 as float32
-            if self.ftype == 1 and data_dtype == np.float16 and n_dims == 1:
-                data = data.astype(np.float32)
-
-            # if f16 desired, convert any float32 2-dim weight tensors to float16
-            if self.ftype == 1 and data_dtype == np.float32 and name.endswith(".weight") and n_dims == 2:
-                data = data.astype(np.float16)
-
-            logger.info(f"{new_name}, n_dims = {n_dims}, {old_dtype} --> {data.dtype}")
-
-            self.gguf_writer.add_tensor(new_name, data)
+        return [(new_name, data_torch)]
 
 
 @Model.register("CodeShellForCausalLM")
@@ -2641,51 +2219,21 @@ class CodeShellModel(Model):
         self.gguf_writer.add_rope_scaling_type(gguf.RopeScalingType.LINEAR)
         self.gguf_writer.add_rope_scaling_factor(1.0)
 
-    def write_tensors(self):
-        block_count = self.hparams.get("n_layers", self.hparams.get("num_hidden_layers", self.hparams.get("n_layer")))
-        tensor_map = gguf.get_tensor_name_map(self.model_arch, block_count)
-        tensors = dict(self.get_tensors())
-        has_lm_head = "lm_head.weight" in tensors.keys() or "output.weight" in tensors.keys()
-        for name, data_torch in tensors.items():
-            # we don't need these
-            if name.endswith((".attn.rotary_emb.inv_freq")):
-                continue
+    def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
+        del bid  # unused
 
-            old_dtype = data_torch.dtype
+        new_name = self.map_tensor_name(name)
 
-            # convert any unsupported data types to float32
-            if data_torch.dtype not in (torch.float16, torch.float32):
-                data_torch = data_torch.to(torch.float32)
+        tensors: list[tuple[str, Tensor]] = [(new_name, data_torch)]
 
-            data = data_torch.squeeze().numpy()
+        if new_name == self.format_tensor_name(gguf.MODEL_TENSOR.TOKEN_EMBD):
+            assert self.tensor_names is not None
 
-            # map tensor names
-            new_name = tensor_map.get_name(name, try_suffixes=(".weight", ".bias"))
-            if new_name is None:
-                raise ValueError(f"Can not map tensor {name!r}")
+            if all(s not in self.tensor_names for s in ("lm_head.weight", "output.weight")):
+                # copy tok_embd.weight to output.weight
+                tensors.append((self.format_tensor_name(gguf.MODEL_TENSOR.OUTPUT), data_torch))
 
-            n_dims = len(data.shape)
-            data_dtype = data.dtype
-
-            # if f32 desired, convert any float16 to float32
-            if self.ftype == 0 and data_dtype == np.float16:
-                data = data.astype(np.float32)
-
-            # TODO: Why cant we use these float16 as-is? There should be not reason to store float16 as float32
-            if self.ftype == 1 and data_dtype == np.float16 and n_dims == 1:
-                data = data.astype(np.float32)
-
-            # if f16 desired, convert any float32 2-dim weight tensors to float16
-            if self.ftype == 1 and data_dtype == np.float32 and name.endswith(".weight") and n_dims == 2:
-                data = data.astype(np.float16)
-
-            logger.info(f"{new_name}, n_dims = {n_dims}, {old_dtype} --> {data.dtype}")
-
-            self.gguf_writer.add_tensor(new_name, data)
-
-            if not has_lm_head and name == "transformer.wte.weight":
-                self.gguf_writer.add_tensor("output.weight", data)
-                logger.info(name, f"=> output.weight, shape = {data.shape}, {old_dtype} --> {data.dtype}")
+        return tensors
 
 
 @Model.register("InternLM2ForCausalLM")
@@ -2714,27 +2262,29 @@ class InternLM2Model(Model):
         sentencepiece_model.ParseFromString(open(tokenizer_path, "rb").read())
         add_prefix = sentencepiece_model.normalizer_spec.add_dummy_prefix
 
-        tokenizer = SentencePieceProcessor(str(tokenizer_path))
+        tokenizer = SentencePieceProcessor()
+        tokenizer.LoadFromFile(str(tokenizer_path))
+
         vocab_size = self.hparams.get('vocab_size', tokenizer.vocab_size())
 
         for token_id in range(vocab_size):
-            piece = tokenizer.id_to_piece(token_id)
+            piece = tokenizer.IdToPiece(token_id)
             text = piece.encode("utf-8")
-            score = tokenizer.get_score(token_id)
+            score = tokenizer.GetScore(token_id)
             if text == b"\x00":
                 # (TODO): fixme
                 # Hack here and replace the \x00 characters.
-                logger.debug(f"InternLM2 convert token '{text}' to '🐉'!")
-                text = "🐉"
+                logger.warning(f"InternLM2 convert token '{text}' to '🐉'!")
+                text = "🐉".encode("utf-8")
 
             toktype = SentencePieceTokenTypes.NORMAL
-            if tokenizer.is_unknown(token_id):
+            if tokenizer.IsUnknown(token_id):
                 toktype = SentencePieceTokenTypes.UNKNOWN
-            elif tokenizer.is_control(token_id):
+            elif tokenizer.IsControl(token_id):
                 toktype = SentencePieceTokenTypes.CONTROL
-            elif tokenizer.is_unused(token_id):
+            elif tokenizer.IsUnused(token_id):
                 toktype = SentencePieceTokenTypes.UNUSED
-            elif tokenizer.is_byte(token_id):
+            elif tokenizer.IsByte(token_id):
                 toktype = SentencePieceTokenTypes.BYTE
             # take care of ununsed raw token
             if piece.startswith('[UNUSED'):
@@ -2921,43 +2471,14 @@ class BertModel(Model):
         special_vocab = gguf.SpecialVocab(self.dir_model, n_vocab=len(tokens))
         special_vocab.add_to_gguf(self.gguf_writer)
 
-    def write_tensors(self):
-        tensor_map = gguf.get_tensor_name_map(self.model_arch, self.block_count)
-        tensors = dict(self.get_tensors())
-        for name, data_torch in tensors.items():
-            # we are only using BERT for embeddings so we don't need the pooling layer
-            if name in ("embeddings.position_ids", "pooler.dense.weight", "pooler.dense.bias"):
-                continue  # we don't need these
+    def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
+        del bid  # unused
 
-            # map tensor names
-            new_name = tensor_map.get_name(name, try_suffixes=(".weight", ".bias"))
-            if new_name is None:
-                raise ValueError(f"Can not map tensor {name!r}")
+        # we are only using BERT for embeddings so we don't need the pooling layer
+        if name in ("embeddings.position_ids", "pooler.dense.weight", "pooler.dense.bias"):
+            return [] # we don't need these
 
-            # convert any unsupported data types to float32
-            if data_torch.dtype not in (torch.float16, torch.float32):
-                data_torch = data_torch.to(torch.float32)
-
-            data = data_torch.squeeze().numpy()
-            n_dims = len(data.shape)
-            new_dtype: type[np.floating[Any]]
-
-            if (
-                self.ftype == 1 and name.endswith(".weight") and n_dims == 2
-                and name != "embeddings.token_type_embeddings.weight"  # not used with get_rows, must be F32
-            ):
-                # if f16 desired, convert any float32 2-dim weight tensors to float16
-                new_dtype = np.float16
-            else:
-                # if f32 desired, convert any float16 to float32
-                new_dtype = np.float32
-
-            logger.info(f"{new_name}, n_dims = {n_dims}, {data_torch.dtype} --> {new_dtype}")
-
-            if data.dtype != new_dtype:
-                data = data.astype(new_dtype)
-
-            self.gguf_writer.add_tensor(new_name, data)
+        return [(self.map_tensor_name(name), data_torch)]
 
 
 @Model.register("NomicBertModel")
@@ -3292,6 +2813,8 @@ class MambaModel(Model):
 
         if (self.dir_model / "tokenizer.json").is_file():
             self._set_vocab_gpt2()
+        elif (self.dir_model / "tokenizer.model").is_file():
+            self._set_vocab_sentencepiece()
         else:
             # Use the GPT-NeoX tokenizer when no tokenizer files are present
             self._set_vocab_builtin("gpt-neox", vocab_size)
@@ -3326,37 +2849,27 @@ class MambaModel(Model):
         self.gguf_writer.add_ssm_dt_b_c_rms(use_dt_b_c_norm) # For classic Mamba we don't apply rms norm on B / DT layers
         self.gguf_writer.add_file_type(self.ftype)
 
-    def write_tensors(self):
-        block_count = self.hparams["n_layer"]
-        tensor_map = gguf.get_tensor_name_map(self.model_arch, block_count)
+    _tok_embd = None
 
-        tok_embd = None
-        tok_embd_name = gguf.TENSOR_NAMES[gguf.MODEL_TENSOR.TOKEN_EMBD] + ".weight"
-        output_name   = gguf.TENSOR_NAMES[gguf.MODEL_TENSOR.OUTPUT]     + ".weight"
+    def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
+        del bid  # unused
 
-        for name, data_torch in self.get_tensors():
-            old_dtype = data_torch.dtype
+        output_name = self.format_tensor_name(gguf.MODEL_TENSOR.OUTPUT)
+        tok_embd_name = self.format_tensor_name(gguf.MODEL_TENSOR.TOKEN_EMBD)
 
-            # convert any unsupported data types to float32
-            if data_torch.dtype not in (torch.float16, torch.float32):
-                data_torch = data_torch.to(torch.float32)
+        new_name = self.map_tensor_name(name)
 
-            # map tensor names
-            new_name = tensor_map.get_name(name, try_suffixes=(".weight", ".bias"))
-            if new_name is None:
-                raise ValueError(f"Can not map tensor {name!r}")
+        if name.endswith(".A_log"):
+            logger.debug("A_log --> A ==> " + new_name)
+            data_torch = -torch.exp(data_torch)
 
-            if name.endswith(".A_log"):
-                logger.debug("A_log --> A ==> " + new_name)
-                data_torch = -torch.exp(data_torch)
-
-            # assuming token_embd.weight is seen before output.weight
-            if tok_embd is not None and new_name == output_name:
-                if torch.equal(tok_embd, data_torch):
-                    logger.debug(f"{output_name} is equivalent to {tok_embd_name}, omitting")
-                    continue
-            if new_name == tok_embd_name:
-                tok_embd = data_torch
+        # assuming token_embd.weight is seen before output.weight
+        if self._tok_embd is not None and new_name == output_name:
+            if torch.equal(self._tok_embd, data_torch):
+                logger.debug(f"{output_name} is equivalent to {tok_embd_name}, omitting")
+                return []
+        elif new_name == tok_embd_name:
+            self._tok_embd = data_torch
 
         return [(new_name, data_torch)]
 
@@ -3370,7 +2883,8 @@ class CommandR2Model(Model):
 
         # max_position_embeddings = 8192 in config.json but model was actually
         # trained on 128k context length
-        self.hparams["max_position_embeddings"] = self.hparams["model_max_length"]
+        # aya-23 models don't have model_max_length specified
+        self.hparams["max_position_embeddings"] = self.find_hparam(["model_max_length", "max_position_embeddings"])
 
     def set_gguf_parameters(self):
         super().set_gguf_parameters()
@@ -3386,15 +2900,16 @@ class OlmoModel(Model):
     def set_gguf_parameters(self):
         super().set_gguf_parameters()
         self.gguf_writer.add_layer_norm_eps(1e-5)
-        if "clip_qkv" in self.hparams is not None:
-            self.gguf_writer.add_clamp_kqv(self.hparams["clip_qkv"])
+        clip_qkv = self.hparams.get("clip_qkv")
+        if clip_qkv is not None:
+            self.gguf_writer.add_clamp_kqv(clip_qkv)
 
     # Same as super class, but permuting q_proj, k_proj
     # Copied from: LlamaModel
-    def write_tensors(self):
-        block_count = self.hparams.get("n_layers", self.hparams.get("num_hidden_layers", self.hparams.get("n_layer")))
-        tensor_map = gguf.get_tensor_name_map(self.model_arch, block_count)
-        n_head = self.hparams.get("num_attention_heads")
+    def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
+        del bid  # unused
+
+        n_head = self.hparams["num_attention_heads"]
         n_kv_head = self.hparams.get("num_key_value_heads")
 
         if name.endswith("q_proj.weight"):
@@ -4493,13 +4008,16 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--outfile", type=Path,
-        help="path to write to; default: based on input",
+        help="path to write to; default: based on input. {ftype} will be replaced by the outtype.",
     )
     parser.add_argument(
         "--outtype", type=str, choices=["f32", "f16", "bf16", "q8_0", "auto"], default="f16",
         help="output format - use f32 for float32, f16 for float16, bf16 for bfloat16, q8_0 for Q8_0, auto for the highest-fidelity 16-bit float type depending on the first loaded tensor type",
     )
-    parser.add_argument("--bigendian", action="store_true", help="model is executed on big endian machine")
+    parser.add_argument(
+        "--bigendian", action="store_true",
+        help="model is executed on big endian machine",
+    )
     parser.add_argument(
         "model", type=Path,
         help="directory containing model file",
