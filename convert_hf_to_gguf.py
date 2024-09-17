@@ -317,6 +317,8 @@ class Model:
                 zeros = zeros.astype("float32").reshape(-1, 1)
                 data = (w - (zeros / scales + (2 ** (bits - 1)))) * scales
                 data_torch = torch.from_numpy(data.reshape(old_shape))
+                if self.ftype == gguf.LlamaFileType.MOSTLY_F16:
+                    data_torch = data_torch.to(torch.float16)
 
         return [(self.map_tensor_name(name), data_torch)]
 
@@ -375,7 +377,7 @@ class Model:
                     data_qtype = gguf.GGMLQuantizationType.F32
 
                 # If self._gptq_bits > 0, the tensor is quantized by GPTQ
-                if self.enable_t_mac and self._gptq_bits > 0:
+                if self.enable_t_mac and self._gptq_bits > 0 and self.ftype == gguf.LlamaFileType.MOSTLY_INT_N:
                     if self._gptq_bits == 1:
                         data_qtype = gguf.GGMLQuantizationType.I1
                     elif self._gptq_bits == 2:
@@ -422,7 +424,8 @@ class Model:
                 # n_dims is implicit in the shape
                 logger.info(f"{f'%-{max_name_len}s' % f'{new_name},'} {old_dtype} --> {data_qtype.name}, shape = {shape_str}")
 
-                self.gguf_writer.add_tensor(new_name, data, raw_dtype=data_qtype, raw_shape=self._gptq_raw_shape)
+                raw_shape = gguf.quant_shape_to_byte_shape(self._gptq_raw_shape, data_qtype) if self.ftype == gguf.LlamaFileType.MOSTLY_INT_N and self._gptq_raw_shape else None
+                self.gguf_writer.add_tensor(new_name, data, raw_dtype=data_qtype, raw_shape=raw_shape)
 
     def set_type(self):
         self.gguf_writer.add_type(gguf.GGUFType.MODEL)

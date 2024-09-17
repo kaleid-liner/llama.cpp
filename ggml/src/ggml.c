@@ -12884,12 +12884,6 @@ UseGgmlGemm1:;
         tmac_float_type * lut_scales = (tmac_float_type *) (qlut + ne10 * ne11 * 4);
         tmac_float_type * lut_biases = (tmac_float_type *) (lut_scales + wt->lut_scales_size * ne11);
 
-        // Transform tensor if not already transformed
-        // Although we have done this in file `llama.cpp`,
-        // we still need to do it here for non-model inference, e.g., test-backend-ops.cpp.
-        // It's better to do this in ggml-backend.c,
-        // but llama.cpp directly manipulates tensor.data for cbe in a lot of space.
-        ggml_tmac_transform_tensor(src0);
         GGML_ASSERT(src1->type == GGML_TYPE_F32);
         tmac_float_type * act_input;
         if (sizeof(tmac_float_type) == 2) {
@@ -12899,7 +12893,7 @@ UseGgmlGemm1:;
         }
         for (int ine11 = ith; ine11 < ne11; ine11 += nth) {
             if (sizeof(tmac_float_type) == 2) {
-                ggml_fp32_to_fp16_row(src1->data, act_input + ne10 * ine11, ne10);
+                ggml_fp32_to_fp16_row(src1->data + ne10 * ine11, act_input + ne10 * ine11, ne10);
             }
             act_input = src1->data;
             ggml_tmac_mul_mat_task_init(act_input + ne10 * ine11,
@@ -12982,6 +12976,7 @@ UseGgmlGemm1:;
             // inline ggml_compute_forward_mul_mat_one_chunk here for simplicity
             const int64_t w_offset      = ith0 * w_chunk_size;
             const int64_t scales_offset = ith0 * wt->scales_size / n_tile_num;
+
             for (int ine11 = ir1_start; ine11 < ir1_end; ine11++) {
                 const int64_t qlut_offset       = ne10 * ine11 * 4;
                 const int64_t lut_scales_offset = wt->lut_scales_size * ine11;
@@ -12993,9 +12988,9 @@ UseGgmlGemm1:;
                                                lut_scales + lut_scales_offset,
                                                lut_biases + lut_scales_offset,
                                                act_output + dst_offset,
-                                               ne01 / n_tile_num, ne00, 1, bits);
+                                               dr0, ne00, 1, bits);
                 if (sizeof(tmac_float_type) == 2) {
-                    ggml_fp16_to_fp32_row(act_output + dst_offset, (float *) dst->data + dst_offset, ne01 / n_tile_num);
+                    ggml_fp16_to_fp32_row(act_output + dst_offset, (float *) dst->data + dst_offset, dr0);
                 }
             }
 

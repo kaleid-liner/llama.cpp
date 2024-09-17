@@ -826,7 +826,7 @@ if (GGML_TMAC)
     if (TMAC_FOUND)
         message(STATUS "TMAC found")
 
-        add_compile_definitions(GGML_USE_TMAC)
+        list(APPEND GGML_CDEF_PUBLIC GGML_USE_TMAC)
 
         set(GGML_HEADERS_TMAC ../include/ggml-tmac.h)
         set(GGML_SOURCES_TMAC ggml-tmac.cpp)

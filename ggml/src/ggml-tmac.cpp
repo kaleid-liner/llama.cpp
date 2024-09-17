@@ -70,7 +70,7 @@ void ggml_tmac_free(void) {
 }
 
 static bool is_type_supported(enum ggml_type type) {
-    if (type == GGML_TYPE_Q4_0 ||
+    if (//type == GGML_TYPE_Q4_0 ||
         type == GGML_TYPE_I1 ||
         type == GGML_TYPE_I2 ||
         type == GGML_TYPE_I3 ||

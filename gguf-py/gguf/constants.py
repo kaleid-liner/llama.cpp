@@ -1416,9 +1416,14 @@ GGML_QUANT_SIZES: dict[GGMLQuantizationType, tuple[int, int]] = {
     GGMLQuantizationType.Q4_0_4_4:(32, 2 + 16),
     GGMLQuantizationType.Q4_0_4_8:(32, 2 + 16),
     GGMLQuantizationType.Q4_0_8_8:(32, 2 + 16),
+    # Currently, we use tricks here
+    # - The block size doesn't include scales or zero_points as group_size is changeable
+    # - So the size is slightly smaller than the real size
+    # - The n_bytes in gguf_reader.py is thus inaccurate
+    # - During inference, the accurate nbytes info will be known through ggml_tmac_get_nbytes
     GGMLQuantizationType.I1:      (8, 1),
     GGMLQuantizationType.I2:      (4, 1),
-    GGMLQuantizationType.I3:      (2, 1),
+    GGMLQuantizationType.I3:      (8, 3),
     GGMLQuantizationType.I4:      (2, 1),
 }
 
