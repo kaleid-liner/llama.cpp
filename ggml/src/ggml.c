@@ -12893,9 +12893,8 @@ UseGgmlGemm1:;
         }
         for (int ine11 = ith; ine11 < ne11; ine11 += nth) {
             if (sizeof(tmac_float_type) == 2) {
-                ggml_fp32_to_fp16_row(src1->data + ne10 * ine11, act_input + ne10 * ine11, ne10);
+                ggml_fp32_to_fp16_row((const float *) src1->data + ne10 * ine11, act_input + ne10 * ine11, ne10);
             }
-            act_input = src1->data;
             ggml_tmac_mul_mat_task_init(act_input + ne10 * ine11,
                                         qlut + ne10 * ine11 * 4,
                                         lut_scales + wt->lut_scales_size * ine11,
@@ -12956,7 +12955,7 @@ UseGgmlGemm1:;
 
         // nchunk0 == n_tile_num
         const int64_t nchunk0 = (nr0 + chunk_size0 - 1) / chunk_size0;
-        const int64_t nchunk1 = (nr1 + chunk_size0 - 1) / chunk_size0;
+        const int64_t nchunk1 = (nr1 + chunk_size1 - 1) / chunk_size1;
 
         const int64_t dr0 = chunk_size0;
         const int64_t dr1 = chunk_size1;
