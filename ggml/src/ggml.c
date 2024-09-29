@@ -12941,6 +12941,55 @@ UseGgmlGemm1:;
         const int n_tile_num = wt->n_tile_num;
         // Currently, T-MAC requires ne0 devisible by n_tile_num
         GGML_ASSERT(ne0 % n_tile_num == 0);
+        // const int w_size      = ne00 * ne01 * bits / 8;
+        // const int w_tile_size = w_size / n_tile_num;
+        // const int a_tile_size = 8;  // TODO: tune in T-MAC
+        // const int a_tile_num  = (ne11 - 1) / a_tile_size + 1;
+
+        // // const int nthw = (n_tile_num > a_tile_num) ? nth : 1;
+        // // const int ntha = (n_tile_num > a_tile_num) ? 1 : nth;
+        // const int nthw = nth;
+        // const int ntha = 1;
+
+        // const int64_t ithw = ith % nthw;
+        // const int64_t itha = ith / nthw;
+
+        // const int th_w_tile_num = (n_tile_num + nthw - 1) / nthw;
+        // const int th_w_tile_beg = ithw * th_w_tile_num;
+        // const int th_w_tile_end = MIN(th_w_tile_beg + th_w_tile_num, n_tile_num);
+
+        // const int th_a_tile_num = (a_tile_num + ntha - 1) / ntha;
+        // const int th_a_tile_beg = itha * th_a_tile_num;
+        // const int th_a_tile_end = MIN(th_a_tile_beg + th_a_tile_num, a_tile_num);
+
+        // // To prevent spin-lock waiting for TVM threads,
+        // // we schedule threads in llama.cpp and only compile kernels for one tile in TVM
+        // // TVM currently does not support strided input placeholder
+        // // Workaround: use T-MAC GeMV and loop over m axis in llama.cpp
+        // for (int i_a_tile = th_a_tile_beg; i_a_tile < th_a_tile_end; i_a_tile++) {
+        //     const int a_offset = i_a_tile * a_tile_size;
+        //     for (int i_w_tile = th_w_tile_beg; i_w_tile < th_w_tile_end; i_w_tile++) {
+        //         const int w_offset          = i_w_tile * w_tile_size;
+        //         const int scales_offset     = wt->scales_size * i_w_tile / n_tile_num;
+        //         for (int ine11 = a_offset; ine11 < MIN(a_offset + a_tile_size, ne11); ine11++) {
+        //             const int qlut_offset       = ne10 * ine11 * 4;
+        //             const int lut_scales_offset = wt->lut_scales_size * ine11;
+        //             const int dst_offset        = ne0 * ine11 + ne0 / n_tile_num * i_w_tile;
+
+        //             ggml_tmac_mul_mat_task_compute(wt->qweights + w_offset,
+        //                                            wt->scales + scales_offset,
+        //                                            qlut + qlut_offset,
+        //                                            lut_scales + lut_scales_offset,
+        //                                            lut_biases + lut_scales_offset,
+        //                                            act_output + dst_offset,
+        //                                            ne01 / n_tile_num, ne00, 1, bits);
+        //             if (sizeof(tmac_float_type) == 2) {
+        //                 ggml_fp16_to_fp32_row(tmac_f_ptr + dst_offset, (float *) dst->data + dst_offset, ne01 / n_tile_num);
+        //             }
+        //         }
+        //     }
+        // }
+
         const int64_t w_size       = ne00 * ne01 * bits / 8;
         const int64_t w_chunk_size = w_size / n_tile_num;
 
@@ -12954,11 +13003,18 @@ UseGgmlGemm1:;
         const int chunk_size1 = 8;  // TODO: tune in T-MAC
 
         // nchunk0 == n_tile_num
-        const int64_t nchunk0 = (nr0 + chunk_size0 - 1) / chunk_size0;
-        const int64_t nchunk1 = (nr1 + chunk_size1 - 1) / chunk_size1;
+        int64_t nchunk0 = (nr0 + chunk_size0 - 1) / chunk_size0;
+        int64_t nchunk1 = (nr1 + chunk_size1 - 1) / chunk_size1;
 
-        const int64_t dr0 = chunk_size0;
-        const int64_t dr1 = chunk_size1;
+        int64_t dr0 = (nr0 + nchunk0 - 1) / nchunk0;
+        int64_t dr1 = chunk_size1;
+
+        // Rechunk
+        if ((nchunk1 == 1) && (nchunk0 > nth * 4)) {
+            // dr0 should be divisible by chunk_size0
+            dr0 = (ne0 / (nth * 4) / chunk_size0) * chunk_size0;
+            nchunk0 = (nr0 + dr0 - 1) / dr0;
+        }
 
         int current_chunk = ith;
 
@@ -12973,23 +13029,25 @@ UseGgmlGemm1:;
             const int64_t ir1_end   = MIN(ir1_start + dr1, nr1);
 
             // inline ggml_compute_forward_mul_mat_one_chunk here for simplicity
-            const int64_t w_offset      = ith0 * w_chunk_size;
-            const int64_t scales_offset = ith0 * wt->scales_size / n_tile_num;
+            for (int64_t ichunk0 = ir0_start / chunk_size0; ichunk0 < ir0_end / chunk_size0; ichunk0++) {
+                const int64_t w_offset      = ichunk0 * w_chunk_size;
+                const int64_t scales_offset = ichunk0 * wt->scales_size / n_tile_num;
 
-            for (int ine11 = ir1_start; ine11 < ir1_end; ine11++) {
-                const int64_t qlut_offset       = ne10 * ine11 * 4;
-                const int64_t lut_scales_offset = wt->lut_scales_size * ine11;
-                const int64_t dst_offset        = ne0 * ine11 + ir0_start;
+                for (int64_t ine11 = ir1_start; ine11 < ir1_end; ine11++) {
+                    const int64_t qlut_offset       = ne10 * ine11 * 4;
+                    const int64_t lut_scales_offset = wt->lut_scales_size * ine11;
+                    const int64_t dst_offset        = ne0 * ine11 + ir0_start;
 
-                ggml_tmac_mul_mat_task_compute(wt->qweights + w_offset,
-                                               wt->scales + scales_offset,
-                                               qlut + qlut_offset,
-                                               lut_scales + lut_scales_offset,
-                                               lut_biases + lut_scales_offset,
-                                               act_output + dst_offset,
-                                               dr0, ne00, 1, bits);
-                if (sizeof(tmac_float_type) == 2) {
-                    ggml_fp16_to_fp32_row(act_output + dst_offset, (float *) dst->data + dst_offset, dr0);
+                    ggml_tmac_mul_mat_task_compute(wt->qweights + w_offset,
+                                                   wt->scales + scales_offset,
+                                                   qlut + qlut_offset,
+                                                   lut_scales + lut_scales_offset,
+                                                   lut_biases + lut_scales_offset,
+                                                   act_output + dst_offset,
+                                                   chunk_size0, ne00, 1, bits);
+                    if (sizeof(tmac_float_type) == 2) {
+                        ggml_fp16_to_fp32_row(act_output + dst_offset, (float *) dst->data + dst_offset, dr0);
+                    }
                 }
             }
 
