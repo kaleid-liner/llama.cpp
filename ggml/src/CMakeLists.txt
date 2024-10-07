@@ -1152,10 +1152,18 @@ if (CMAKE_OSX_ARCHITECTURES      STREQUAL "arm64" OR
             list(APPEND ARCH_FLAGS -mno-unaligned-access)
         endif()
         if (${CMAKE_SYSTEM_PROCESSOR} MATCHES "aarch64" AND GGML_TMAC AND TMAC_FOUND)
-            # Jetson AGX Orin
             # We need fullfp16 for T-MAC
-            # TODO: check_cxx_source_compiles
-            list(APPEND ARCH_FLAGS -march=armv8.2a+fp16)
+            # TODO: we need to simplify this logic through check_cxx_source_compiles or Presets?
+            check_cxx_source_compiles("#include <arm_neon.h>\nint main() { int8x16_t _a, _b; int32x4_t _s = vmlaq_f32(_s, _a, _b); return 0; }" GGML_COMPILER_SUPPORT_MATMUL_INT8)
+            if (GGML_COMPILER_SUPPORT_MATMUL_INT8)
+                # Device with armv8.7a+ cpu, e.g., WSL on Surface Laptop 7
+                # based on arm64-windows-llvm.cmake
+                list(APPEND ARCH_FLAGS -march=armv8.7-a+fp16 -fvectorize -ffp-model=fast -fno-finite-math-only)
+                add_compile_definitions(__ARM_FEATURE_MATMUL_INT8)
+            else ()
+                # Jetson AGX Orin, Raspberry Pi 5
+                list(APPEND ARCH_FLAGS -march=armv8.2a+fp16)
+            endif ()
         endif()
         if (${CMAKE_SYSTEM_PROCESSOR} MATCHES "ARM64" AND GGML_TMAC AND TMAC_FOUND)
             # ARM Windows with LLVM clang GNU interface
