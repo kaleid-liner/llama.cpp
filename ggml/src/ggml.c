@@ -13006,7 +13006,7 @@ UseGgmlGemm1:;
         int64_t nchunk0 = (nr0 + chunk_size0 - 1) / chunk_size0;
         int64_t nchunk1 = (nr1 + chunk_size1 - 1) / chunk_size1;
 
-        int64_t dr0 = (nr0 + nchunk0 - 1) / nchunk0;
+        int64_t dr0 = chunk_size0;
         int64_t dr1 = chunk_size1;
 
         // Rechunk
@@ -13036,7 +13036,7 @@ UseGgmlGemm1:;
                 for (int64_t ine11 = ir1_start; ine11 < ir1_end; ine11++) {
                     const int64_t qlut_offset       = ne10 * ine11 * 4;
                     const int64_t lut_scales_offset = wt->lut_scales_size * ine11;
-                    const int64_t dst_offset        = ne0 * ine11 + ir0_start;
+                    const int64_t dst_offset        = ne0 * ine11 + ichunk0 * chunk_size0;
 
                     ggml_tmac_mul_mat_task_compute(wt->qweights + w_offset,
                                                    wt->scales + scales_offset,
@@ -13046,7 +13046,7 @@ UseGgmlGemm1:;
                                                    act_output + dst_offset,
                                                    chunk_size0, ne00, 1, bits);
                     if (sizeof(tmac_float_type) == 2) {
-                        ggml_fp16_to_fp32_row(act_output + dst_offset, (float *) dst->data + dst_offset, dr0);
+                        ggml_fp16_to_fp32_row(act_output + dst_offset, (float *) dst->data + dst_offset, chunk_size0);
                     }
                 }
             }
