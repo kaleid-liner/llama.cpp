@@ -65,7 +65,6 @@ class Model:
     model_name: str | None
     metadata_override: Path | None
     dir_model_card: Path
-    is_lora: bool
     enable_t_mac: bool
     kcfg_file: Path | None
 
@@ -75,7 +74,7 @@ class Model:
     def __init__(self, dir_model: Path, ftype: gguf.LlamaFileType, fname_out: Path, is_big_endian: bool = False,
                  use_temp_file: bool = False, eager: bool = False,
                  metadata_override: Path | None = None, model_name: str | None = None,
-                 split_max_tensors: int = 0, split_max_size: int = 0, dry_run: bool = False, small_first_shard: bool = False, is_lora: bool = False,
+                 split_max_tensors: int = 0, split_max_size: int = 0, dry_run: bool = False, small_first_shard: bool = False,
                  enable_t_mac: bool = False, kcfg_file: Path | None = None):
         if type(self) is Model:
             raise TypeError(f"{type(self).__name__!r} should not be directly instantiated")
@@ -98,7 +97,6 @@ class Model:
         self.metadata_override = metadata_override
         self.model_name = model_name
         self.dir_model_card = dir_model  # overridden in convert_lora_to_gguf.py
-        self.is_lora = is_lora  # true if model is used inside convert_lora_to_gguf.py
         self.enable_t_mac = enable_t_mac
         self.kcfg_file = kcfg_file
         # Apply heuristics to figure out typical tensor encoding based on first layer tensor encoding type
