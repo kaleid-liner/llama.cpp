@@ -471,10 +471,6 @@ inline static void * ggml_calloc(size_t num, size_t size) {
 #include <Accelerate/Accelerate.h>
 #endif
 
-#if defined(GGML_USE_TMAC)
-#include "ggml-tmac.h"
-#endif
-
 // floating point type used to accumulate sums
 typedef double ggml_float;
 
