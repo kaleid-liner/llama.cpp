@@ -70,7 +70,7 @@ void ggml_tmac_free(void) {
 }
 
 static bool is_type_supported(enum ggml_type type) {
-    if (//type == GGML_TYPE_Q4_0 ||
+    if (type == GGML_TYPE_Q4_0 ||
         type == GGML_TYPE_I1 ||
         type == GGML_TYPE_I2 ||
         type == GGML_TYPE_I3 ||
@@ -244,7 +244,7 @@ void ggml_tmac_transform_tensor(struct ggml_tensor * tensor) {
 
     if (do_permutate(tensor->type)) {
 // for fast testing
-// #define TMAC_EMPTY_WEIGHTS
+#define TMAC_EMPTY_WEIGHTS
 #ifndef TMAC_EMPTY_WEIGHTS
         // TODO: optimize to accelerate weights loading
         uint8_t * buf1 = new uint8_t[m * k];
