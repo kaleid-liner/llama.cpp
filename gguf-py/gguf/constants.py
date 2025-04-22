@@ -1887,6 +1887,10 @@ class GGMLQuantizationType(IntEnum):
     BF16    = 30
     TQ1_0   = 34
     TQ2_0   = 35
+    I1      = 39
+    I2      = 40
+    I3      = 41
+    I4      = 42
 
 
 class ExpertGatingFuncType(IntEnum):
@@ -1938,6 +1942,7 @@ class LlamaFileType(IntEnum):
     # MOSTLY_Q4_0_8_8      = 35  # removed from gguf files, use Q4_0 and runtime repack
     MOSTLY_TQ1_0         = 36  # except 1d tensors
     MOSTLY_TQ2_0         = 37  # except 1d tensors
+    MOSTLY_INT_N         = 38  # except 1d tensors
 
     GUESSED              = 1024  # not specified in the model file
 
@@ -2013,6 +2018,15 @@ GGML_QUANT_SIZES: dict[GGMLQuantizationType, tuple[int, int]] = {
     GGMLQuantizationType.BF16:    (1, 2),
     GGMLQuantizationType.TQ1_0:   (256, 2 + 4 * 13),
     GGMLQuantizationType.TQ2_0:   (256, 2 + 64),
+    # Currently, we use tricks here
+    # - The block size doesn't include scales or zero_points as group_size is changeable
+    # - So the size is slightly smaller than the real size
+    # - The n_bytes in gguf_reader.py is thus inaccurate
+    # - During inference, the accurate nbytes info will be known through ggml_tmac_get_nbytes
+    GGMLQuantizationType.I1:      (8, 1),
+    GGMLQuantizationType.I2:      (4, 1),
+    GGMLQuantizationType.I3:      (8, 3),
+    GGMLQuantizationType.I4:      (2, 1),
 }
 
 

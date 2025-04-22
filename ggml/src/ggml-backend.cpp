@@ -1875,11 +1875,26 @@ static void ggml_backend_cpu_buffer_memset_tensor(ggml_backend_buffer_t buffer, 
     GGML_UNUSED(buffer);
 }
 
+// #ifdef GGML_USE_TMAC
+// #include "ggml-tmac.h"
+
+// static void ggml_backend_cpu_buffer_set_tensor(ggml_backend_buffer_t buffer, struct ggml_tensor * tensor, const void * data, size_t offset, size_t size) {
+//     if (qtype_has_tmac_kernels(tensor->type)) {
+//         GGML_LOG_DEBUG("%s: tmac repack tensor %s of type %s\n", __func__, tensor->name, ggml_type_name(tensor->type));
+//         ggml_backend_tmac_convert_weight(tensor, data, offset, size);
+//     } else {
+//         memcpy((char *) tensor->data + offset, data, size);
+//     }
+
+//     GGML_UNUSED(buffer);
+// }
+// #else
 static void ggml_backend_cpu_buffer_set_tensor(ggml_backend_buffer_t buffer, struct ggml_tensor * tensor, const void * data, size_t offset, size_t size) {
     memcpy((char *)tensor->data + offset, data, size);
 
     GGML_UNUSED(buffer);
 }
+// #endif
 
 static void ggml_backend_cpu_buffer_get_tensor(ggml_backend_buffer_t buffer, const struct ggml_tensor * tensor, void * data, size_t offset, size_t size) {
     memcpy(data, (const char *)tensor->data + offset, size);

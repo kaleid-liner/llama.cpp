@@ -388,7 +388,11 @@ extern "C" {
         // GGML_TYPE_IQ4_NL_4_4 = 36,
         // GGML_TYPE_IQ4_NL_4_8 = 37,
         // GGML_TYPE_IQ4_NL_8_8 = 38,
-        GGML_TYPE_COUNT   = 39,
+        GGML_TYPE_I1      = 39,
+        GGML_TYPE_I2      = 40,
+        GGML_TYPE_I3      = 41,
+        GGML_TYPE_I4      = 42,
+        GGML_TYPE_COUNT   = 43,
     };
 
     // precision
@@ -2163,6 +2167,10 @@ extern "C" {
     GGML_API void                          ggml_threadpool_params_init   (struct ggml_threadpool_params * p, int n_threads);
     GGML_API bool                          ggml_threadpool_params_match  (const struct ggml_threadpool_params * p0, const struct ggml_threadpool_params * p1);
 
+    // For T-MAC
+//     GGML_API void ggml_set_n_threads(int param_n_threads);
+//     GGML_API void ggml_set_batch_size(int param_n_batch);
+    
 #ifdef  __cplusplus
 }
 #endif

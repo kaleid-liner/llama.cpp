@@ -2,6 +2,10 @@
 
 #include "ggml.h"
 
+#ifdef GGML_USE_TMAC
+    #include "ggml-tmac.h"
+#endif
+
 #include <array>
 #include <cinttypes>
 #include <cstring>
@@ -59,6 +63,7 @@ static std::string llama_model_ftype_name(llama_ftype ftype) {
         case LLAMA_FTYPE_MOSTLY_IQ4_XS:   return "IQ4_XS - 4.25 bpw";
         case LLAMA_FTYPE_MOSTLY_IQ3_S:    return "IQ3_S - 3.4375 bpw";
         case LLAMA_FTYPE_MOSTLY_IQ3_M:    return "IQ3_S mix - 3.66 bpw";
+        case LLAMA_FTYPE_MOSTLY_INT_N:    return "INT_N";
 
         default: return "unknown, may not work";
     }
@@ -467,6 +472,23 @@ llama_model_loader::llama_model_loader(
         /*.ctx      = */ &ctx,
     };
 
+#if defined(GGML_USE_TMAC)
+    std::string tmac_meta_fname = fname;
+    std::string new_fname_part = "tmac_meta.json";
+    std::replace(tmac_meta_fname.begin(), tmac_meta_fname.end(), '\\', '/');
+    size_t lastSlashPos = tmac_meta_fname.find_last_of('/');
+    if (lastSlashPos == std::string::npos) {
+        tmac_meta_fname = new_fname_part;  // Only the new file name, no directory to append
+    } else {
+        tmac_meta_fname = tmac_meta_fname.substr(0, lastSlashPos).append("/" + new_fname_part);
+    }
+
+    LLAMA_LOG_INFO("%s: loading TMAC meta data from %s\n", __func__, tmac_meta_fname.c_str());
+    if (!tmac_meta_init(tmac_meta_fname.c_str())) {
+        throw std::runtime_error(format("%s: failed to load TMAC meta data from %s\n", __func__, tmac_meta_fname.c_str()));
+    }
+#endif
+
     meta.reset(gguf_init_from_file(fname.c_str(), params));
     if (!meta) {
         throw std::runtime_error(format("%s: failed to load model from %s\n", __func__, fname.c_str()));
@@ -634,6 +656,10 @@ llama_model_loader::llama_model_loader(
             case GGML_TYPE_IQ4_NL:  ftype = LLAMA_FTYPE_MOSTLY_IQ4_NL;  break;
             case GGML_TYPE_IQ4_XS:  ftype = LLAMA_FTYPE_MOSTLY_IQ4_XS;  break;
             case GGML_TYPE_IQ3_S:   ftype = LLAMA_FTYPE_MOSTLY_IQ3_S;   break;
+            case GGML_TYPE_I1:      ftype = LLAMA_FTYPE_MOSTLY_INT_N;   break;
+            case GGML_TYPE_I2:      ftype = LLAMA_FTYPE_MOSTLY_INT_N;   break;
+            case GGML_TYPE_I3:      ftype = LLAMA_FTYPE_MOSTLY_INT_N;   break;
+            case GGML_TYPE_I4:      ftype = LLAMA_FTYPE_MOSTLY_INT_N;   break;
             default:
                 {
                     LLAMA_LOG_WARN("%s: unknown type %s\n", __func__, ggml_type_name(type_max));
@@ -1066,6 +1092,11 @@ bool llama_model_loader::load_all_data(
         }
 
         size_done += n_size;
+
+#if defined(GGML_USE_TMAC)
+        // Do pre-transformation to reduce first-run latency
+        ggml_tmac_transform_tensor(cur);
+#endif
     }
 
     // free temporary resources used for async uploads

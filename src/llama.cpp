@@ -8,6 +8,7 @@
 
 #include "ggml.h"
 #include "ggml-backend.h"
+#include "ggml-cpp.h"
 
 #include <algorithm>
 #include <cstddef>
