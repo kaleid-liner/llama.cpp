@@ -9,7 +9,6 @@
 #include "ggml-impl.h"
 #include "ggml-cpu-quants.h"
 #include "ggml-threading.h"
-
 #include "unary-ops.h"
 #include "binary-ops.h"
 #include "vec.h"

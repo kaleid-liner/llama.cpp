@@ -26,8 +26,9 @@ class extra_buffer_type : ggml::cpu::extra_buffer_type {
 
         const struct ggml_tensor * src0 = op->src[0];
         const struct ggml_tensor * src1 = op->src[1];
-        if (op->op == GGML_OP_MUL_MAT && ggml_is_contiguous(src0) &&  // src0 must be contiguous
-            ggml_is_contiguous(src1) &&                               // src1 must be contiguous
+        if (op->op == GGML_OP_MUL_MAT &&
+            // ggml_is_contiguous(src0) &&         // src0 must be contiguous
+            // ggml_is_contiguous(src1) &&         // src1 must be contiguous
             // op->src[0]->buffer && op->src[0]->buffer->buft == ggml_backend_tmac_buffer_type() &&
             ggml_tmac_can_mul_mat(src0, src1, op)) {
             if (op->src[1]->buffer && !ggml_backend_buft_is_host(op->src[1]->buffer->buft)) {    // src1 must be host buffer
