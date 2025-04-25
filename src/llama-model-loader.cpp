@@ -3,7 +3,7 @@
 #include "ggml.h"
 
 #ifdef GGML_USE_TMAC
-    #include "ggml-tmac.h"
+    #include "tmac.h"
 #endif
 
 #include <array>
@@ -473,20 +473,7 @@ llama_model_loader::llama_model_loader(
     };
 
 #if defined(GGML_USE_TMAC)
-    std::string tmac_meta_fname = fname;
-    std::string new_fname_part = "tmac_meta.json";
-    std::replace(tmac_meta_fname.begin(), tmac_meta_fname.end(), '\\', '/');
-    size_t lastSlashPos = tmac_meta_fname.find_last_of('/');
-    if (lastSlashPos == std::string::npos) {
-        tmac_meta_fname = new_fname_part;  // Only the new file name, no directory to append
-    } else {
-        tmac_meta_fname = tmac_meta_fname.substr(0, lastSlashPos).append("/" + new_fname_part);
-    }
-
-    LLAMA_LOG_INFO("%s: loading TMAC meta data from %s\n", __func__, tmac_meta_fname.c_str());
-    if (!tmac_meta_init(tmac_meta_fname.c_str())) {
-        throw std::runtime_error(format("%s: failed to load TMAC meta data from %s\n", __func__, tmac_meta_fname.c_str()));
-    }
+    ggml_cpu_tmac_init(fname.c_str());
 #endif
 
     meta.reset(gguf_init_from_file(fname.c_str(), params));
@@ -1093,10 +1080,10 @@ bool llama_model_loader::load_all_data(
 
         size_done += n_size;
 
-#if defined(GGML_USE_TMAC)
-        // Do pre-transformation to reduce first-run latency
-        ggml_tmac_transform_tensor(cur);
-#endif
+// #if defined(GGML_USE_TMAC)
+//         // Do pre-transformation to reduce first-run latency
+//         ggml_tmac_transform_tensor(cur);
+// #endif
     }
 
     // free temporary resources used for async uploads

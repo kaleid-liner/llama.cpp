@@ -13,10 +13,6 @@
 #include <hbwmalloc.h>
 #endif
 
-#ifdef GGML_USE_TMAC
-#include "ggml-tmac.h"
-#endif
-
 #if defined(_MSC_VER) || defined(__MINGW32__)
 #include <malloc.h> // using malloc.h with MSC/MINGW
 #elif !defined(__FreeBSD__) && !defined(__NetBSD__) && !defined(__OpenBSD__)
@@ -582,8 +578,8 @@ static const struct ggml_type_traits type_traits[GGML_TYPE_COUNT] = {
     },
     [GGML_TYPE_I2] = {
         .type_name                = "i2",
-        .blck_size                = 4,
-        .type_size                = sizeof(int8_t),
+        .blck_size                = 64,
+        .type_size                = 64 * 2 / 8 + 2 * sizeof(float),
         .is_quantized             = false,
     },
     [GGML_TYPE_I3] = {
@@ -1197,18 +1193,6 @@ size_t ggml_nbytes(const struct ggml_tensor * tensor) {
             nbytes += (tensor->ne[i] - 1)*tensor->nb[i];
         }
     }
-    // printf("name: %s, type: %d\n", tensor->name, tensor->type);
-#ifdef GGML_USE_TMAC
-    // printf("use tmac\n");
-    if(tensor->type == GGML_TYPE_I1 ||
-       tensor->type == GGML_TYPE_I2 ||
-       tensor->type == GGML_TYPE_I3 ||
-       tensor->type == GGML_TYPE_I4){
-        nbytes = ggml_tmac_get_nbytes(tensor);
-    }
-#else
-    // printf("no use tmac\n");
-#endif
 
     return nbytes;
 }

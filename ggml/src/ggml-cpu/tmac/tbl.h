@@ -1,5 +1,7 @@
 #pragma once
 
+/* Please do not include this header file outside ggml-cpu/tmac */
+
 #ifndef INTRINSIC_TYPES_H
 #define INTRINSIC_TYPES_H
 

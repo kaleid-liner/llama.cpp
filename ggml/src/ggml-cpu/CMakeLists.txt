@@ -22,6 +22,14 @@ function(ggml_add_cpu_backend_variant_impl tag_name)
         ggml-cpu/amx/amx.h
         ggml-cpu/amx/mmq.cpp
         ggml-cpu/amx/mmq.h
+        ggml-cpu/tmac/tmac.cpp
+        ggml-cpu/tmac/tmac.h
+        ggml-cpu/tmac/lut_mul_mat.cpp
+        ggml-cpu/tmac/lut_mul_mat.h
+        ggml-cpu/tmac/lut_ctor.cpp
+        ggml-cpu/tmac/lut_ctor.h
+        ggml-cpu/tmac/tbl.cpp
+        ggml-cpu/tmac/tbl.h
         ggml-cpu/ggml-cpu-impl.h
         ggml-cpu/common.h
         ggml-cpu/binary-ops.h

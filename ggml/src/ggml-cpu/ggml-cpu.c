@@ -9,9 +9,6 @@
 #include "ggml-impl.h"
 #include "ggml-cpu-quants.h"
 #include "ggml-threading.h"
-#ifdef GGML_USE_TMAC
-    #include "tmac/ggml-tmac.h"
-#endif
 
 #include "unary-ops.h"
 #include "binary-ops.h"
@@ -52,6 +49,10 @@
 
 #ifdef GGML_USE_LLAMAFILE
 #include "llamafile/sgemm.h"
+#endif
+
+#ifdef GGML_USE_TMAC
+#include "tmac.h"
 #endif
 
 #if defined(_MSC_VER)
@@ -1286,100 +1287,6 @@ static void ggml_compute_forward_mul_mat_one_chunk(
     }
 }
 
-#ifdef GGML_USE_TMAC
-void ggml_tmac_forward_mul_mat(
-    void * A, void * B, void * C, void * QLUT, void * LUT_Scales, void * LUT_Biases, void * Scales,
-    int M, int K, int N, const struct tmac_kernel_config * kernel_config, bool is_tuning,
-    int ith, int nth, struct ggml_threadpool * threadpool, void * activation_src, void * output_src) {
-
-    // Currently, scale is a must.
-    assert(kernel_config->has_scale);
-    // Currently, one_scale and has_zero_point are mutually exclusive.
-    assert(!(kernel_config->one_scale && kernel_config->has_zero_point));
-
-    int bits = kernel_config->bits;
-    int bm = kernel_config->bm;
-    int lut_scales_size = K / kernel_config->act_group_size;
-
-    for (int ine11 = ith; ine11 < N; ine11 += nth) {
-        if (!is_tuning && sizeof(tmac_float_type) == 2) {
-            // TODO: can we reuse the src1->data memory?
-            ggml_fp32_to_fp16_row(((const float *) activation_src) + K * ine11, ((tmac_float_type *)B) + K * ine11, K);
-        }
-        ggml_tmac_mul_mat_task_init(((tmac_float_type *)B) + K * ine11,
-                                    ((int8_t *)QLUT) + K * ine11 * 4,
-                                    ((tmac_float_type *)LUT_Scales) + lut_scales_size * ine11,
-                                    ((tmac_float_type *)LUT_Biases) + lut_scales_size * ine11,
-                                    M, K, 1, bits);
-    }
-    if (ith == 0) {
-        // Every thread starts at ith, so the first unprocessed chunk is nth.  This save a bit of coordination right at the start.
-        atomic_store_explicit(&threadpool->current_chunk, nth, memory_order_relaxed);
-    }
-
-    ggml_barrier(threadpool);
-
-
-    int m = bm / bits;
-    const int n_tile_num = M / m;
-    GGML_ASSERT(M % n_tile_num == 0);
-
-    const int64_t w_size       = M * K * bits / 8;
-    const int64_t w_chunk_size = w_size / n_tile_num;
-
-    const int chunk_size0 = M / n_tile_num;
-    const int chunk_size1 = kernel_config->chunk_n;  // TODO: tune in T-MAC
-    int nchunk0 = (M + chunk_size0 - 1) / chunk_size0;  // = n_tile_num
-    int nchunk1 = (N + chunk_size1 - 1) / chunk_size1;
-    int nr0 = M;
-    int nr1 = N;
-    int dr0 = chunk_size0;
-    int dr1 = chunk_size1;
-
-    int current_chunk = ith;
-
-    while (current_chunk < nchunk0 * nchunk1) {
-        const int64_t ith0 = current_chunk % nchunk0;
-        const int64_t ith1 = current_chunk / nchunk0;
-
-        const int64_t ir0_start = dr0 * ith0;
-        const int64_t ir0_end   = MIN(ir0_start + dr0, nr0);
-
-        const int64_t ir1_start = dr1 * ith1;
-        const int64_t ir1_end   = MIN(ir1_start + dr1, nr1);
-
-        // inline ggml_compute_forward_mul_mat_one_chunk here for simplicity
-        for (int64_t ichunk0 = ir0_start / chunk_size0; ichunk0 < ir0_end / chunk_size0; ichunk0++) {
-            const int64_t w_offset      = ichunk0 * w_chunk_size;
-            const int64_t scales_offset = kernel_config->one_scale ? 0 : ggml_tmac_get_scales_size(kernel_config, m, K) * ichunk0;
-
-            for (int64_t ine11 = ir1_start; ine11 < ir1_end; ine11++) {
-                const int64_t qlut_offset       = K * ine11 * 4;
-                const int64_t lut_scales_offset = lut_scales_size * ine11;
-                const int64_t dst_offset        = M * ine11 + ichunk0 * chunk_size0;
-
-                ggml_tmac_mul_mat_task_compute(((uint8_t *)A) + w_offset,
-                                            ((tmac_float_type *)Scales) + scales_offset,
-                                            ((int8_t *)QLUT) + qlut_offset,
-                                            ((tmac_float_type *)LUT_Scales) + lut_scales_offset,
-                                            ((tmac_float_type *)LUT_Biases) + lut_scales_offset,
-                                            ((tmac_float_type *)C) + dst_offset,
-                                            M, K, 1, bits);
-                if (!is_tuning && sizeof(tmac_float_type) == 2) {
-                    ggml_fp16_to_fp32_row(((ggml_fp16_t *)C) + dst_offset, ((float *) output_src) + dst_offset, chunk_size0);
-                }
-            }
-        }
-
-        if (nth >= nchunk0 * nchunk1) {
-            break;
-        }
-
-        current_chunk = atomic_fetch_add_explicit(&threadpool->current_chunk, 1, memory_order_relaxed);
-    }
-}
-#endif
-
 static void ggml_compute_forward_mul_mat(
         const struct ggml_compute_params * params,
               struct ggml_tensor * dst) {
@@ -1441,157 +1348,6 @@ static void ggml_compute_forward_mul_mat(
     }
 UseGgmlGemm1:;
 #endif
-
-#if defined(GGML_USE_TMAC)
-    if (ggml_tmac_can_mul_mat(src0, src1, dst)) {
-        const int bits = ggml_tmac_get_type_bits(src0->type);
-        // src0: weight,     ne00 = k, ne01 = n
-        // src1: activation, ne10 = k, ne11 = m
-        char * wdata = params->wdata;
-
-        struct tmac_tensor_extra * wt = src0->extra;
-        char * cur_wdata = wdata;
-        tmac_float_type * tmac_f_ptr = (tmac_float_type *) wdata;
-        if (sizeof(tmac_float_type) == 2) {
-            cur_wdata = wdata + MAX(ne10, ne01) * ne11 * sizeof(tmac_float_type);
-        };
-        int8_t * qlut = (int8_t *) cur_wdata;
-        tmac_float_type * lut_scales = (tmac_float_type *) (qlut + ne10 * ne11 * 4);
-        tmac_float_type * lut_biases = (tmac_float_type *) (lut_scales + wt->lut_scales_size * ne11);
-
-        GGML_ASSERT(src1->type == GGML_TYPE_F32);
-        tmac_float_type * act_input;
-        if (sizeof(tmac_float_type) == 2) {
-            act_input = tmac_f_ptr;
-        } else {
-            act_input = src1->data;
-        }
-
-        for (int ine11 = ith; ine11 < ne11; ine11 += nth) {
-            if (sizeof(tmac_float_type) == 2) {
-                // TODO: can we reuse the src1->data memory?
-                ggml_fp32_to_fp16_row((const float *) src1->data + ne10 * ine11, act_input + ne10 * ine11, ne10);
-            }
-            ggml_tmac_mul_mat_task_init(act_input + ne10 * ine11,
-                                        qlut + ne10 * ine11 * 4,
-                                        lut_scales + wt->lut_scales_size * ine11,
-                                        lut_biases + wt->lut_scales_size * ine11,
-                                        ne01, ne00, 1, bits);
-        }
-
-        if (ith == 0) {
-            // Every thread starts at ith, so the first unprocessed chunk is nth.  This save a bit of coordination right at the start.
-            atomic_store_explicit(&params->threadpool->current_chunk, nth, memory_order_relaxed);
-        }
-
-        ggml_barrier(params->threadpool);
-
-        tmac_float_type * act_output;
-        if (sizeof(tmac_float_type) == 2) {
-            act_output = tmac_f_ptr;
-        } else {
-            act_output = dst->data;
-        }
-
-        const int n_tile_num = wt->n_tile_num;
-        // Currently, T-MAC requires ne0 devisible by n_tile_num
-        GGML_ASSERT(ne0 % n_tile_num == 0);
-
-        const int64_t w_size       = ne00 * ne01 * bits / 8;
-        const int64_t w_chunk_size = w_size / n_tile_num;
-
-        const int64_t nr0 = ne0;
-        const int64_t nr1 = ne1 * ne2 * ne3;
-
-        // Adopt the same style with current llama.cpp impl
-        // But different chunk size for 0/1 dim.
-        // No scrap.
-        const int chunk_size0 = ne0 / n_tile_num;
-        const int chunk_size1 = 8;  // TODO: tune in T-MAC
-
-        // nchunk0 == n_tile_num
-        int64_t nchunk0 = (nr0 + chunk_size0 - 1) / chunk_size0;
-        int64_t nchunk1 = (nr1 + chunk_size1 - 1) / chunk_size1;
-
-        int64_t dr0 = chunk_size0;
-        int64_t dr1 = chunk_size1;
-#if defined(TMAC_RECHUNK)
-        // Rechunk
-        if ((nchunk1 == 1) && (nchunk0 > nth * 4)) {
-            // dr0 should be divisible by chunk_size0
-            dr0 = (ne0 / (nth * 4) / chunk_size0) * chunk_size0;
-            nchunk0 = (nr0 + dr0 - 1) / dr0;
-        }
-        #endif
-
-        int current_chunk = ith;
-
-        while (current_chunk < nchunk0 * nchunk1) {
-            const int64_t ith0 = current_chunk % nchunk0;
-            const int64_t ith1 = current_chunk / nchunk0;
-
-            const int64_t ir0_start = dr0 * ith0;
-            const int64_t ir0_end   = MIN(ir0_start + dr0, nr0);
-
-            const int64_t ir1_start = dr1 * ith1;
-            const int64_t ir1_end   = MIN(ir1_start + dr1, nr1);
-
-            // if (current_chunk == 0) {
-            //     char wname[256];
-            //     sprintf(wname, "scales_w2/%s_scales.bin", src0->name);
-            //     saveArrayToFileF32(wname, (const float *) wt->scales, wt->scales_size);
-
-            //     sprintf(wname, "qweights_w2/%s_qweights.bin", src0->name);
-            //     saveArrayToFileUI8(wname, (const uint8_t *) wt->qweights, w_size);
-            // }
-
-            // inline ggml_compute_forward_mul_mat_one_chunk here for simplicity
-            for (int64_t ichunk0 = ir0_start / chunk_size0; ichunk0 < ir0_end / chunk_size0; ichunk0++) {
-                const int64_t w_offset      = ichunk0 * w_chunk_size;
-                const int64_t scales_offset = ichunk0 * wt->scales_size / n_tile_num;
-
-                for (int64_t ine11 = ir1_start; ine11 < ir1_end; ine11++) {
-                    const int64_t qlut_offset       = ne10 * ine11 * 4;
-                    const int64_t lut_scales_offset = wt->lut_scales_size * ine11;
-                    const int64_t dst_offset        = ne0 * ine11 + ichunk0 * chunk_size0;
-
-                    ggml_tmac_mul_mat_task_compute(wt->qweights + w_offset,
-                                                   wt->scales + scales_offset,
-                                                   qlut + qlut_offset,
-                                                   lut_scales + lut_scales_offset,
-                                                   lut_biases + lut_scales_offset,
-                                                   act_output + dst_offset,
-                                                   ne01, ne00, 1, bits);
-                    if (sizeof(tmac_float_type) == 2) {
-                        ggml_fp16_to_fp32_row(act_output + dst_offset, (float *) dst->data + dst_offset, chunk_size0);
-                    }
-                    // if ((!strcmp(src0->name, "blk.0.attn_q.weight")) && current_chunk == 0) {
-                    //     printf("\n\n\n\nC_value:\n\n\n");
-                    //     for (int jj = 0; jj < 128; jj++) {
-                    //         printf("%f ", ((float *)act_output)[dst_offset + jj]);
-                    //     }
-                    //     printf("\n");
-                    // }
-                    // if ((!strcmp(src0->name, "blk.0.attn_q.weight")) && current_chunk == 0) {
-                    //     printf("\n\n\n\ndst->data:\n\n\n");
-                    //     for (int jj = 0; jj < 128; jj++) {
-                    //         printf("%f ", ((float *)dst->data)[dst_offset + jj]);
-                    //     }
-                    //     printf("\n");
-                    // }
-                }
-            }
-
-            if (nth >= nchunk0 * nchunk1) {
-                break;
-            }
-
-            current_chunk = atomic_fetch_add_explicit(&params->threadpool->current_chunk, 1, memory_order_relaxed);
-        }
-
-        return;
-    }  // if (ggml_tmac_can_mul_mat(src0, src1, dst))
-#endif  // #if defined(GGML_USE_TMAC)
 
     if (src1->type != vec_dot_type) {
         char * wdata = params->wdata;
@@ -2907,6 +2663,14 @@ void ggml_threadpool_resume(struct ggml_threadpool * threadpool) {
 #endif
 }
 
+void ggml_threadpool_atomic_store_explicit(struct ggml_threadpool * threadpool, int value) {
+    atomic_store_explicit(&threadpool->current_chunk, value, memory_order_relaxed);
+}
+
+int ggml_threadpool_atomic_fetch_add_explicit(struct ggml_threadpool * threadpool, int value) {
+    return (int)atomic_fetch_add_explicit(&threadpool->current_chunk, value, memory_order_relaxed);
+}
+
 struct ggml_cplan ggml_graph_plan(
           const struct ggml_cgraph * cgraph,
                                int   n_threads,
@@ -2969,11 +2733,6 @@ struct ggml_cplan ggml_graph_plan(
                     {
                         const enum ggml_type vec_dot_type = type_traits_cpu[node->src[0]->type].vec_dot_type;
 
-#if defined(GGML_USE_TMAC)
-                        if (ggml_tmac_can_mul_mat(node->src[0], node->src[1], node)) {
-                            cur = ggml_tmac_mul_mat_get_wsize(node->src[0], node->src[1], node);
-                        } else
-#endif
                         if (node->src[1]->type != vec_dot_type) {
                             cur = ggml_row_size(vec_dot_type, ggml_nelements(node->src[1]));
                         }
@@ -3683,4 +3442,10 @@ void ggml_cpu_init(void) {
     }
 
     ggml_critical_section_end();
+}
+
+void ggml_cpu_tmac_init(const char * fname) {
+#ifdef GGML_USE_TMAC
+    ggml_tmac_init(fname);
+#endif
 }
