@@ -60,7 +60,7 @@ size_t ggml_tmac_get_nbytes(const struct ggml_tensor * tensor);
 
 void ggml_backend_tmac_convert_weight(struct ggml_tensor * tensor, const void * data, size_t offset, size_t size);
 
-bool ggml_tmac_can_mul_mat(const struct ggml_tensor * src0, const struct ggml_tensor * src1, const struct ggml_tensor * dst);
+bool ggml_tmac_can_mul_mat(const struct ggml_tensor * dst);
 
 void ggml_backend_tmac_mul_mat(const struct ggml_compute_params * params, struct ggml_tensor * dst);
 

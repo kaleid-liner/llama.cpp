@@ -24,13 +24,10 @@ class extra_buffer_type : ggml::cpu::extra_buffer_type {
         //     return ggml_is_contiguous(t);
         // };
 
-        const struct ggml_tensor * src0 = op->src[0];
-        const struct ggml_tensor * src1 = op->src[1];
-        if (op->op == GGML_OP_MUL_MAT &&
-            // ggml_is_contiguous(src0) &&         // src0 must be contiguous
+        if (// ggml_is_contiguous(src0) &&         // src0 must be contiguous
             // ggml_is_contiguous(src1) &&         // src1 must be contiguous
             // op->src[0]->buffer && op->src[0]->buffer->buft == ggml_backend_tmac_buffer_type() &&
-            ggml_tmac_can_mul_mat(src0, src1, op)) {
+            ggml_tmac_can_mul_mat(op)) {
             if (op->src[1]->buffer && !ggml_backend_buft_is_host(op->src[1]->buffer->buft)) {    // src1 must be host buffer
                 return false;
             }
@@ -120,21 +117,21 @@ static void ggml_backend_tmac_buffer_clear(ggml_backend_buffer_t buffer, uint8_t
 
 
 static ggml_backend_buffer_i ggml_backend_tmac_buffer_interface = {
-    /* .free_buffer     = */ ggml_backend_tmac_buffer_free_buffer,
-    /* .get_base        = */ ggml_backend_tmac_buffer_get_base,
+    /* .free_buffer     = */ ggml_backend_tmac_buffer_free_buffer,      // same as ggml_backend_cpu_buffer_free_buffer
+    /* .get_base        = */ ggml_backend_tmac_buffer_get_base,         // same as ggml_backend_cpu_buffer_get_base
     /* .init_tensor     = */ ggml_backend_tmac_buffer_init_tensor,
-    /* .memset_tensor   = */ ggml_backend_tmac_buffer_memset_tensor,
+    /* .memset_tensor   = */ ggml_backend_tmac_buffer_memset_tensor,    // same as ggml_backend_cpu_buffer_memset_tensor
     /* .set_tensor      = */ ggml_backend_tmac_buffer_set_tensor,
     /* .get_tensor      = */ nullptr,
     /* .cpy_tensor      = */ nullptr,
-    /* .clear           = */ ggml_backend_tmac_buffer_clear,
+    /* .clear           = */ ggml_backend_tmac_buffer_clear,            // same as ggml_backend_cpu_buffer_clear
     /* .reset           = */ nullptr,
 };
 
 
 // T-MAC backend buffer type
 static const char * ggml_backend_tmac_buffer_type_get_name(ggml_backend_buffer_type_t buft) {
-    return "CPU";
+    return "TMAC";
 
     GGML_UNUSED(buft);
 }
@@ -155,42 +152,22 @@ static size_t ggml_backend_tmac_buffer_type_get_alignment(ggml_backend_buffer_ty
     GGML_UNUSED(buft);
 }
 
-static bool ggml_backend_tmac_buffer_type_is_host(ggml_backend_buffer_type_t buft) {
-    return true;
+static size_t ggml_backend_tmac_buffer_type_get_alloc_size(ggml_backend_buffer_type_t buft, const struct ggml_tensor * tensor) {
+    // T-MAC version of ggml_nbytes
+    if(tensor->type == GGML_TYPE_I1 ||
+        tensor->type == GGML_TYPE_I2 ||
+        tensor->type == GGML_TYPE_I3 ||
+        tensor->type == GGML_TYPE_I4){
+         return ggml_tmac_get_nbytes(tensor);
+    }
+  
+    return ggml_nbytes(tensor);
 
     GGML_UNUSED(buft);
 }
 
-static size_t ggml_backend_tmac_buffer_type_get_alloc_size(ggml_backend_buffer_type_t buft, const struct ggml_tensor * tensor) {
-    // T-MAC version of ggml_nbytes
-    for (int i = 0; i < GGML_MAX_DIMS; ++i) {
-        if (tensor->ne[i] <= 0) {
-            return 0;
-        }
-    }
-
-    size_t nbytes;
-    const size_t blck_size = ggml_blck_size(tensor->type);
-    if (blck_size == 1) {
-        nbytes = ggml_type_size(tensor->type);
-        for (int i = 0; i < GGML_MAX_DIMS; ++i) {
-            nbytes += (tensor->ne[i] - 1)*tensor->nb[i];
-        }
-    }
-    else {
-        nbytes = tensor->ne[0]*tensor->nb[0]/blck_size;
-        for (int i = 1; i < GGML_MAX_DIMS; ++i) {
-            nbytes += (tensor->ne[i] - 1)*tensor->nb[i];
-        }
-    }
-
-    if(tensor->type == GGML_TYPE_I1 ||
-       tensor->type == GGML_TYPE_I2 ||
-       tensor->type == GGML_TYPE_I3 ||
-       tensor->type == GGML_TYPE_I4){
-        nbytes = ggml_tmac_get_nbytes(tensor);
-    }
-    return nbytes;
+static bool ggml_backend_tmac_buffer_type_is_host(ggml_backend_buffer_type_t buft) {
+    return true;
 
     GGML_UNUSED(buft);
 }
@@ -200,10 +177,10 @@ ggml_backend_buffer_type_t ggml_backend_tmac_buffer_type() {
         /* .iface = */ {
                         /* .get_name         = */ ggml_backend_tmac_buffer_type_get_name,
                         /* .alloc_buffer     = */ ggml_backend_tmac_buffer_type_alloc_buffer,
-                        /* .get_alignment    = */ ggml_backend_tmac_buffer_type_get_alignment,
+                        /* .get_alignment    = */ ggml_backend_tmac_buffer_type_get_alignment,      // same as ggml_backend_cpu_*
                         /* .get_max_size     = */ nullptr,  // defaults to SIZE_MAX
                         /* .get_alloc_size   = */ ggml_backend_tmac_buffer_type_get_alloc_size,
-                        /* .is_host          = */ ggml_backend_tmac_buffer_type_is_host,
+                        /* .is_host          = */ ggml_backend_tmac_buffer_type_is_host,            // same as ggml_backend_cpu_*
                         },
         /* .device  = */ ggml_backend_reg_dev_get(ggml_backend_cpu_reg(), 0),
         /* .context = */ new ggml::cpu::tmac::extra_buffer_type(),

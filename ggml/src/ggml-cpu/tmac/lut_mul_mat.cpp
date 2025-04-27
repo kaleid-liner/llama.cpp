@@ -19,9 +19,7 @@
 
 namespace ggml::cpu::tmac {
     bool tensor_traits::work_size(int /* n_threads */, const struct ggml_tensor * op, size_t & size) {
-        const struct ggml_tensor * src0 = op->src[0];
-        const struct ggml_tensor * src1 = op->src[1];
-        if (op->op == GGML_OP_MUL_MAT && ggml_tmac_can_mul_mat(src0, src1, op)) {
+        if (ggml_tmac_can_mul_mat(op)) {
             size = ggml_backend_tmac_desired_wsize(op);
             return true;
         }
@@ -29,9 +27,7 @@ namespace ggml::cpu::tmac {
     }
 
     bool tensor_traits::compute_forward(struct ggml_compute_params * params, struct ggml_tensor * op) {
-        const struct ggml_tensor * src0 = op->src[0];
-        const struct ggml_tensor * src1 = op->src[1];
-        if (op->op == GGML_OP_MUL_MAT && ggml_tmac_can_mul_mat(src0, src1, op)) {
+        if (ggml_tmac_can_mul_mat(op)) {
             ggml_backend_tmac_mul_mat(params, op);
             return true;
         };
@@ -68,6 +64,9 @@ void tmac_init() {
         tmac_tensor_extras = new tmac_tensor_extra[GGML_TMAC_MAX_NODES];
     }
     tmac_tensor_extras_index = 0;
+}
+void tmac_free() {
+    // TODO
 }
 
 /****** T-MAC meta model info ******/
@@ -146,8 +145,12 @@ bool is_type_supported(enum ggml_type type) {
     }
 }
 
-bool ggml_tmac_can_mul_mat(const struct ggml_tensor * src0, const struct ggml_tensor * src1, const struct ggml_tensor * dst) {
-    if ((is_type_supported(src0->type)) &&
+bool ggml_tmac_can_mul_mat(const struct ggml_tensor * dst) {
+    struct ggml_tensor * src0 = dst->src[0];
+    struct ggml_tensor * src1 = dst->src[1];
+
+    if (dst->op == GGML_OP_MUL_MAT &&
+        (is_type_supported(src0->type)) &&
         src1->type == GGML_TYPE_F32 &&
         dst->type == GGML_TYPE_F32 &&
         strcmp(src0->name, "token_embd.weight") &&  // means not equal
@@ -639,7 +642,7 @@ struct BlockTQ20TypeAccessor {
     }
 };
 
-static inline void ggml_tmac_transform_tensor(struct ggml_tensor * tensor) {
+static inline void ggml_tmac_transform_tensor(struct ggml_tensor * tensor, const void * origin_data) {
     GGML_ASSERT(tensor->extra != nullptr);
     struct ggml::cpu::tmac::tensor_traits * tensor_extra = (struct ggml::cpu::tmac::tensor_traits *) tensor->extra;
     if (!(is_type_supported(tensor->type) && tensor_extra->get_tmac_tensor_extra(tensor->name) == nullptr)) {
@@ -737,15 +740,15 @@ static inline void ggml_tmac_transform_tensor(struct ggml_tensor * tensor) {
             for (int ik = 0; ik < k; ik++) {
                 uint8_t v;
                 if (tensor->type == GGML_TYPE_Q4_0) {
-                    v = BlockQ40TypeAccessor::get_q(tensor->data, im * k + ik);
+                    v = BlockQ40TypeAccessor::get_q(origin_data, im * k + ik);
                 } else if (tensor->type == GGML_TYPE_I2) {
-                    v = BlockI2TypeAccessor::get_q(tensor->data, im * k + ik);
+                    v = BlockI2TypeAccessor::get_q(origin_data, im * k + ik);
                 } else if (tensor->type == GGML_TYPE_I4) {
-                    v = BlockI4TypeAccessor::get_q(tensor->data, im * k + ik);
+                    v = BlockI4TypeAccessor::get_q(origin_data, im * k + ik);
                 } else if (tensor->type == GGML_TYPE_TQ1_0) {
-                    v = BlockTQ10TypeAccessor::get_q(tensor->data, im * k + ik);
+                    v = BlockTQ10TypeAccessor::get_q(origin_data, im * k + ik);
                 } else if (tensor->type == GGML_TYPE_TQ2_0) {
-                    v = BlockTQ20TypeAccessor::get_q(tensor->data, im * k + ik);
+                    v = BlockTQ20TypeAccessor::get_q(origin_data, im * k + ik);
                 } else {
                     GGML_LOG_ERROR("Unsupported type: %s\n", ggml_type_name(tensor->type));
                 }
@@ -815,7 +818,7 @@ static inline void ggml_tmac_transform_tensor(struct ggml_tensor * tensor) {
             }
         }
 
-        const float * int_n_scales = (const float * ) ((const uint8_t *) tensor->data + k * m / 8);
+        const float * int_n_scales = (const float * ) ((const uint8_t *) origin_data + k * m / 8);
         const float * int_n_zero_points = int_n_scales + scales_size / 2;
 
         if (scales_size < m / bits) {  // BitNet-like scale (m_groups,)
@@ -830,15 +833,15 @@ static inline void ggml_tmac_transform_tensor(struct ggml_tensor * tensor) {
                     tmac_float_type scale;
                     int idx = im * k + ik;
                     if (tensor->type == GGML_TYPE_Q4_0) {
-                        scale = BlockQ40TypeAccessor::get_scale(tensor->data, idx);
+                        scale = BlockQ40TypeAccessor::get_scale(origin_data, idx);
                     } else if (tensor->type == GGML_TYPE_I2) {
                         scale = BlockI2TypeAccessor::get_scale(int_n_scales, idx, group_size);
                     } else if (tensor->type == GGML_TYPE_I4) {
                         scale = BlockI4TypeAccessor::get_scale(int_n_scales, idx, group_size);
                     } else if (tensor->type == GGML_TYPE_TQ1_0) {
-                        scale = BlockTQ10TypeAccessor::get_scale(tensor->data, idx, group_size);
+                        scale = BlockTQ10TypeAccessor::get_scale(origin_data, idx, group_size);
                     } else if (tensor->type == GGML_TYPE_TQ2_0) {
-                        scale = BlockTQ20TypeAccessor::get_scale(tensor->data, idx, group_size);
+                        scale = BlockTQ20TypeAccessor::get_scale(origin_data, idx, group_size);
                     } else {
                         GGML_LOG_ERROR("Unsupported type for get_scale: %s\n", ggml_type_name(tensor->type));
                     }
@@ -891,7 +894,7 @@ static inline void ggml_tmac_transform_tensor(struct ggml_tensor * tensor) {
 
 void ggml_backend_tmac_convert_weight(struct ggml_tensor * tensor, const void * data, size_t offset, size_t size) {
     GGML_ASSERT(offset == 0 && size == ggml_tmac_get_nbytes(tensor)); // only full tensor conversion is supported for now
-    ggml_tmac_transform_tensor(tensor);
+    ggml_tmac_transform_tensor(tensor, data);
 }
 
 
