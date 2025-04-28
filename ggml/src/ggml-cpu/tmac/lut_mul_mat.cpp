@@ -386,7 +386,7 @@ static void ggml_tmac_tune_kernel_config(int M, int K) {
                 // insert to dict for finding
                 insert_or_assign_tmac_kernel_config(M, K, bits, kernel_config);
                 struct tmac_run_single_kernel_settings settings = {
-                    /* .test_time_ms = */ 1000,
+                    /* .test_time_ms = */ 5000,
                     /* .M = */ M,
                     /* .N = */ N,
                     /* .K = */ K,
