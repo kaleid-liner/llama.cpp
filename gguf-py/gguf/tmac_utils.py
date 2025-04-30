@@ -1,9 +1,12 @@
 import json
+import logging
 import numpy as np
 import os
 from pathlib import Path
 import sys
 from typing import Optional, Tuple
+
+logger = logging.getLogger("tmac_utils")
 
 
 if 'NO_LOCAL_GGUF' not in os.environ:
@@ -82,8 +85,12 @@ def unpack_gptqv2(qweight: np.ndarray, scales: np.ndarray, qzeros: np.ndarray, g
 
 
 def get_quantization_config(model_dir: str) -> dict:
-    with open(model_dir / "config.json", "r", encoding="utf-8") as f:
-        hparams = json.load(f)
+    try:
+        with open(model_dir / "config.json", "r", encoding="utf-8") as f:
+            hparams = json.load(f)
+    except FileNotFoundError:
+        logger.warning("config.json not found, using default empty quantization config")
+        hparams = {}
 
     # GPTQ
     quantization_config = hparams.get("quantization_config", {})
@@ -105,6 +112,36 @@ def get_quantization_config(model_dir: str) -> dict:
         "quant_method": quant_method,
         "weight_bits": weight_bits,
     }
+
+
+def derive_ftype_from_quantization_config(quantization_config: dict) -> gguf.LlamaFileType | None:
+    # If bits > 0, the tensor is quantized by GPTQ
+    bits = quantization_config["bits"]
+    group_size = quantization_config["group_size"]
+    sym = quantization_config["sym"]
+    ftype = None
+    if quantization_config["quant_method"] in ["gptq", "bitdistiller"] and bits > 0:
+        if bits == 2 and group_size == -1:
+            ftype = gguf.LlamaFileType.MOSTLY_TMAC_BN_0
+        elif bits == 2 and group_size == 64 and sym:
+            ftype = gguf.LlamaFileType.MOSTLY_TMAC_W2G64_0
+        elif bits == 2 and group_size == 64 and not sym:
+            ftype = gguf.LlamaFileType.MOSTLY_TMAC_W2G64_1
+        elif bits == 2 and group_size == 128 and sym:
+            ftype = gguf.LlamaFileType.MOSTLY_TMAC_W2G128_0
+        elif bits == 2 and group_size == 128 and not sym:
+            ftype = gguf.LlamaFileType.MOSTLY_TMAC_W2G128_1
+        elif bits == 4 and group_size == 64 and sym:
+            ftype = gguf.LlamaFileType.MOSTLY_TMAC_W4G64_0
+        elif bits == 4 and group_size == 64 and not sym:
+            ftype = gguf.LlamaFileType.MOSTLY_TMAC_W4G64_1
+        elif bits == 4 and group_size == 128 and sym:
+            ftype = gguf.LlamaFileType.MOSTLY_TMAC_W4G128_0
+        elif bits == 4 and group_size == 128 and not sym:
+            ftype = gguf.LlamaFileType.MOSTLY_TMAC_W4G128_1
+        else:
+            raise ValueError(f"Unsupported number of (bits, group_size, sym): ({bits}, {group_size}, {sym})")
+    return ftype
 
 
 def tighten_bit_array(
