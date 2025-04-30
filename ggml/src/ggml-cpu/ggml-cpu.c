@@ -377,22 +377,47 @@ static const struct ggml_type_traits_cpu type_traits_cpu[GGML_TYPE_COUNT] = {
         .vec_dot_type             = GGML_TYPE_Q8_K,
         .nrows                    = 1,
     },
-    [GGML_TYPE_I1] = {
+    [GGML_TYPE_TMAC_BN_0] = {
         .vec_dot                  = (ggml_vec_dot_t) ggml_vec_dot_f32,
         .vec_dot_type             = GGML_TYPE_F32,
         .nrows                    = 1,
     },
-    [GGML_TYPE_I2] = {
+    [GGML_TYPE_TMAC_W2G64_0] = {
         .vec_dot                  = (ggml_vec_dot_t) ggml_vec_dot_f32,
         .vec_dot_type             = GGML_TYPE_F32,
         .nrows                    = 1,
     },
-    [GGML_TYPE_I3] = {
+    [GGML_TYPE_TMAC_W2G64_1] = {
         .vec_dot                  = (ggml_vec_dot_t) ggml_vec_dot_f32,
         .vec_dot_type             = GGML_TYPE_F32,
         .nrows                    = 1,
     },
-    [GGML_TYPE_I4] = {
+    [GGML_TYPE_TMAC_W2G128_0] = {
+        .vec_dot                  = (ggml_vec_dot_t) ggml_vec_dot_f32,
+        .vec_dot_type             = GGML_TYPE_F32,
+        .nrows                    = 1,
+    },
+    [GGML_TYPE_TMAC_W2G128_1] = {
+        .vec_dot                  = (ggml_vec_dot_t) ggml_vec_dot_f32,
+        .vec_dot_type             = GGML_TYPE_F32,
+        .nrows                    = 1,
+    },
+    [GGML_TYPE_TMAC_W4G64_0] = {
+        .vec_dot                  = (ggml_vec_dot_t) ggml_vec_dot_f32,
+        .vec_dot_type             = GGML_TYPE_F32,
+        .nrows                    = 1,
+    },
+    [GGML_TYPE_TMAC_W4G64_1] = {
+        .vec_dot                  = (ggml_vec_dot_t) ggml_vec_dot_f32,
+        .vec_dot_type             = GGML_TYPE_F32,
+        .nrows                    = 1,
+    },
+    [GGML_TYPE_TMAC_W4G128_0] = {
+        .vec_dot                  = (ggml_vec_dot_t) ggml_vec_dot_f32,
+        .vec_dot_type             = GGML_TYPE_F32,
+        .nrows                    = 1,
+    },
+    [GGML_TYPE_TMAC_W4G128_1] = {
         .vec_dot                  = (ggml_vec_dot_t) ggml_vec_dot_f32,
         .vec_dot_type             = GGML_TYPE_F32,
         .nrows                    = 1,
@@ -3437,14 +3462,12 @@ void ggml_cpu_init(void) {
         ggml_init_arm_arch_features();
 #endif
 
+#ifdef GGML_USE_TMAC
+        ggml_tmac_init();
+#endif
+
         is_first_call = false;
     }
 
     ggml_critical_section_end();
-}
-
-void ggml_cpu_tmac_init(const char * fname) {
-#ifdef GGML_USE_TMAC
-    ggml_tmac_init(fname);
-#endif
 }

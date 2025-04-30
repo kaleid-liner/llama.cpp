@@ -13,7 +13,7 @@ extern "C" {
 #endif
 
 ggml_backend_buffer_type_t ggml_backend_tmac_buffer_type(void);
-bool ggml_tmac_init(const char * fname);
+void ggml_tmac_init(void);
 
 #ifdef __cplusplus
 }

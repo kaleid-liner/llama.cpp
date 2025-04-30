@@ -11,7 +11,6 @@
 #include "ggml-cpu.h"
 #include "ggml-cpu-impl.h"
 #include "lut_mul_mat.h"
-#include "../../../../common/json.hpp"
 
 
 #define GGML_USE_TMAC
@@ -69,80 +68,41 @@ void tmac_free() {
     // TODO
 }
 
-/****** T-MAC meta model info ******/
-struct llama_model_tmac_meta {
-    int bits;
-    int q_group_size;
-    bool has_scale;
-    bool has_zero_point;
-    bool one_scale;
-    char * quant_method;
-
-    int g;
-    int ngroups_per_elem;
-    int act_group_size;
-    int actk;
-};
-
-static struct llama_model_tmac_meta * tmac_model_meta = nullptr;
-bool load_and_parse_tmac_meta(const char * tmac_meta_fname) {
-    tmac_model_meta = new llama_model_tmac_meta();
-
-    std::ifstream file(tmac_meta_fname);
-    
-    if (!file.is_open()) {
-        GGML_LOG_ERROR("Failed to open file: %s\n", tmac_meta_fname);
-        return false;
-    }
-
-    // Parse the JSON content from the file 
-    nlohmann::json j;
-    try {
-        file >> j;  // Read the JSON data into the object
-    } catch (const nlohmann::json::parse_error& e) {
-        GGML_LOG_ERROR("JSON parsing error: %s\n", e.what());
-        return false;
-    }
-
-    // Load the values into the struct
-    tmac_model_meta->bits = j["bits"].get<int>();
-    tmac_model_meta->q_group_size = j["group_size"].get<int>();
-    tmac_model_meta->has_scale = j["has_scale"].get<bool>();
-    tmac_model_meta->has_zero_point = j["has_zero_point"].get<bool>();
-    tmac_model_meta->one_scale = j["one_scale"].get<bool>();
-    tmac_model_meta->quant_method = new char[64];
-    strncpy(tmac_model_meta->quant_method, j["quant_method"].get<std::string>().c_str(), sizeof(tmac_model_meta->quant_method) - 1);
-    tmac_model_meta->quant_method[sizeof(tmac_model_meta->quant_method) - 1] = '\0';  // Ensure null termination
-
-    // Fixed features
-    tmac_model_meta->g = 4;
-    tmac_model_meta->ngroups_per_elem = 8 / tmac_model_meta->g;
-    if (tmac_model_meta->q_group_size % 64 == 0) {
-        tmac_model_meta->act_group_size = 64;
-    } else if (tmac_model_meta->q_group_size % 32 == 0) {
-        tmac_model_meta->act_group_size = 32;
-    } else {
-        GGML_LOG_ERROR("Unsupported activation group size: %d\n", tmac_model_meta->q_group_size);
-    }
-    tmac_model_meta->actk = tmac_model_meta->act_group_size / tmac_model_meta->g;
-
-    return true;
+/****** T-MAC helper functions ******/
+static inline bool is_tmac_2bit_type(enum ggml_type type) {
+    return (
+        type == GGML_TYPE_TMAC_BN_0 ||
+        type == GGML_TYPE_TMAC_W2G64_0 ||
+        type == GGML_TYPE_TMAC_W2G64_1 ||
+        type == GGML_TYPE_TMAC_W2G128_0 ||
+        type == GGML_TYPE_TMAC_W2G128_1
+    );
 }
 
+static inline bool is_tmac_4bit_type(enum ggml_type type) {
+    return (
+        type == GGML_TYPE_TMAC_W4G64_0 ||
+        type == GGML_TYPE_TMAC_W4G64_1 ||
+        type == GGML_TYPE_TMAC_W4G128_0 ||
+        type == GGML_TYPE_TMAC_W4G128_1
+    );
+}
 
-/****** T-MAC helper functions ******/
+bool is_tmac_type(enum ggml_type type) {
+    return (
+        is_tmac_2bit_type(type) ||
+        is_tmac_4bit_type(type)
+    );
+}
+
 bool is_type_supported(enum ggml_type type) {
-    if (type == GGML_TYPE_Q4_0 ||
-        type == GGML_TYPE_I1 ||
-        type == GGML_TYPE_I2 ||
-        type == GGML_TYPE_I3 ||
-        type == GGML_TYPE_I4 ||
+    return (
+        type == GGML_TYPE_Q4_0 ||
         type == GGML_TYPE_TQ1_0 ||
-        type == GGML_TYPE_TQ2_0) {
-        return true;
-    } else {
-        return false;
-    }
+        type == GGML_TYPE_TQ2_0 ||
+        is_tmac_2bit_type(type) ||
+        is_tmac_4bit_type(type)
+    );
 }
 
 bool ggml_tmac_can_mul_mat(const struct ggml_tensor * dst) {
@@ -160,20 +120,78 @@ bool ggml_tmac_can_mul_mat(const struct ggml_tensor * dst) {
     return false;
 }
 
+static inline int get_type_bits(enum ggml_type type) {
+    if (is_tmac_2bit_type(type) || type == GGML_TYPE_TQ1_0 || type == GGML_TYPE_TQ2_0) {
+        return 2;
+    } else if (is_tmac_4bit_type(type) || type == GGML_TYPE_Q4_0) {
+        return 4;
+    } else {
+        return 0;
+    }
+}
+
+static inline int get_type_group_size(enum ggml_type type) {
+    switch (type) {
+        case GGML_TYPE_TMAC_BN_0:
+            return -1;
+        case GGML_TYPE_TMAC_W2G64_0:
+        case GGML_TYPE_TMAC_W2G64_1:
+        case GGML_TYPE_TMAC_W4G64_0:
+        case GGML_TYPE_TMAC_W4G64_1:
+            return 64;
+        case GGML_TYPE_TMAC_W2G128_0:
+        case GGML_TYPE_TMAC_W2G128_1:
+        case GGML_TYPE_TMAC_W4G128_0:
+        case GGML_TYPE_TMAC_W4G128_1:
+            return 128;
+        default:
+            return 0;
+    }
+}
+
+static inline bool get_type_has_zero_point(enum ggml_type type) {
+    switch (type) {
+        case GGML_TYPE_TMAC_BN_0:
+        case GGML_TYPE_TMAC_W2G64_0:
+        case GGML_TYPE_TMAC_W4G64_0:
+        case GGML_TYPE_TMAC_W2G128_0:
+        case GGML_TYPE_TMAC_W4G128_0:
+            return false;
+        case GGML_TYPE_TMAC_W2G64_1:
+        case GGML_TYPE_TMAC_W4G64_1:
+        case GGML_TYPE_TMAC_W2G128_1:
+        case GGML_TYPE_TMAC_W4G128_1:
+            return true;
+        default:
+            return false;
+    }
+}
+
+static inline bool get_type_is_one_scale(enum ggml_type type) {
+    switch (type) {
+        case GGML_TYPE_TMAC_BN_0:
+            return true;
+        default:
+            return false;
+    }
+}
+
 static inline int ggml_tmac_get_type_bits(enum ggml_type type) {
     switch (type) {
-        case GGML_TYPE_I1:
-            return 1;
-        case GGML_TYPE_I2:
+        case GGML_TYPE_TMAC_BN_0:
+        case GGML_TYPE_TMAC_W2G64_0:
+        case GGML_TYPE_TMAC_W2G64_1:
+        case GGML_TYPE_TMAC_W2G128_0:
+        case GGML_TYPE_TMAC_W2G128_1:
             return 2;
-        case GGML_TYPE_I3:
-            return 3;
-        case GGML_TYPE_I4:
+        case GGML_TYPE_TMAC_W4G64_0:
+        case GGML_TYPE_TMAC_W4G64_1:
+        case GGML_TYPE_TMAC_W4G128_0:
+        case GGML_TYPE_TMAC_W4G128_1:
             return 4;
         case GGML_TYPE_Q4_0:
             return 4;
         case GGML_TYPE_TQ1_0:
-            return 2;
         case GGML_TYPE_TQ2_0:
             return 2;
         default:
@@ -210,7 +228,36 @@ static void aligned_free(void * ptr) {
     free(ptr);
 #endif
 }
-    
+
+
+/****** T-MAC meta model info ******/
+static void init_tmac_kernel_config_from_tensor_type(enum ggml_type type, struct tmac_kernel_config * kernel_config) {
+    kernel_config->bits = get_type_bits(type);
+    kernel_config->q_group_size = get_type_group_size(type);
+    kernel_config->has_zero_point = get_type_has_zero_point(type);
+    kernel_config->one_scale = get_type_is_one_scale(type);
+
+    // Fixed features
+    kernel_config->has_scale = true;
+    kernel_config->g = 4;
+    kernel_config->ngroups_per_elem = 8 / kernel_config->g;
+    if (kernel_config->q_group_size % 64 == 0) {
+        kernel_config->act_group_size = 64;
+    } else if (kernel_config->q_group_size % 32 == 0) {
+        kernel_config->act_group_size = 32;
+    } else {
+        GGML_LOG_ERROR("Unsupported activation group size: %d\n", kernel_config->q_group_size);
+    }
+    kernel_config->actk = kernel_config->act_group_size / kernel_config->g;
+
+    // kfactor to be tuned
+    // bm to be tuned
+    kernel_config->simd_n_in = 16;
+    kernel_config->simd_n_out = 8;
+
+    kernel_config->chunk_n = 8;
+}
+
 
 /****** T-MAC configurations ******/
 static std::unordered_map<std::string, struct tmac_kernel_config> final_tmac_kernel_config;
@@ -322,33 +369,15 @@ static void ggml_tmac_tune_single_kernel_config(const struct tmac_run_single_ker
     elapsed_time = total_elapsed.count() / n_try * 1000.0;  // in ms
 }
 
-static void ggml_tmac_tune_kernel_config(int M, int K) {
-    const int bits = tmac_model_meta->bits;
+static void ggml_tmac_tune_kernel_config(const struct ggml_tensor * tensor, int M, int K) {
+    const int bits = get_type_bits(tensor->type);
     struct tmac_kernel_config * existing_kcfg = find_tmac_kernel_config(M, K, bits);
     if (existing_kcfg != nullptr) {
         return;
     }
 
     struct tmac_kernel_config kernel_config;
-    {
-        kernel_config.g = tmac_model_meta->g;
-        kernel_config.ngroups_per_elem = tmac_model_meta->ngroups_per_elem;
-        kernel_config.q_group_size = tmac_model_meta->q_group_size;
-        kernel_config.act_group_size = tmac_model_meta->act_group_size;
-
-        kernel_config.has_scale = tmac_model_meta->has_scale;
-        // kfactor to be tuned
-        kernel_config.bits = bits;
-        kernel_config.actk = tmac_model_meta->actk;
-        kernel_config.has_zero_point = tmac_model_meta->has_zero_point;
-        kernel_config.one_scale = tmac_model_meta->one_scale;
-
-        // bm to be tuned
-        kernel_config.simd_n_in = 16;
-        kernel_config.simd_n_out = 8;
-
-        kernel_config.chunk_n = 8;
-    }
+    init_tmac_kernel_config_from_tensor_type(tensor->type, &kernel_config);
 
     // TODO: add more choices for prefilling?
     int N = 1;
@@ -422,7 +451,7 @@ size_t ggml_backend_tmac_desired_wsize(const struct ggml_tensor * dst) {
 
     struct tmac_kernel_config * kernel_config = find_tmac_kernel_config(n, k, bits);
     if (kernel_config == nullptr) {
-        ggml_tmac_tune_kernel_config(n, k);
+        ggml_tmac_tune_kernel_config(src0, n, k);
         kernel_config = find_tmac_kernel_config(n, k, bits);
     }
     const int lut_scales_size = k / kernel_config->act_group_size;
@@ -444,7 +473,7 @@ size_t ggml_tmac_get_nbytes(const struct ggml_tensor * tensor) {
 
     struct tmac_kernel_config * kernel_config = find_tmac_kernel_config(m, k, bits);
     if (kernel_config == nullptr) {
-        ggml_tmac_tune_kernel_config(m, k);
+        ggml_tmac_tune_kernel_config(tensor, m, k);
         kernel_config = find_tmac_kernel_config(m, k, bits);
     }
 
@@ -461,15 +490,15 @@ size_t ggml_tmac_get_nbytes(const struct ggml_tensor * tensor) {
 /****** T-MAC convert tensor ******/
 static bool do_permutate(enum ggml_type type) {
     return true;
-    if (type == GGML_TYPE_I1 ||
-        type == GGML_TYPE_I2 ||
-        type == GGML_TYPE_I3 ||
-        type == GGML_TYPE_I4) {
-        // Add additional args to decide if permuted I2 or naive I2
-        return false;
-    } else {
-        return true;
-    }
+    // if (type == GGML_TYPE_I1 ||
+    //     type == GGML_TYPE_I2 ||
+    //     type == GGML_TYPE_I3 ||
+    //     type == GGML_TYPE_I4) {
+    //     // Add additional args to decide if permuted I2 or naive I2
+    //     return false;
+    // } else {
+    //     return true;
+    // }
 }
 
 struct BlockQ40TypeAccessor {
@@ -655,7 +684,7 @@ static inline void ggml_tmac_transform_tensor(struct ggml_tensor * tensor, const
 
     struct tmac_kernel_config * kernel_config = find_tmac_kernel_config(m, k, bits);
     if (kernel_config == nullptr) {
-        ggml_tmac_tune_kernel_config(m, k);
+        ggml_tmac_tune_kernel_config(tensor, m, k);
         kernel_config = find_tmac_kernel_config(m, k, bits);
     }
 
@@ -741,9 +770,9 @@ static inline void ggml_tmac_transform_tensor(struct ggml_tensor * tensor, const
                 uint8_t v;
                 if (tensor->type == GGML_TYPE_Q4_0) {
                     v = BlockQ40TypeAccessor::get_q(origin_data, im * k + ik);
-                } else if (tensor->type == GGML_TYPE_I2) {
+                } else if (is_tmac_2bit_type(tensor->type)) {
                     v = BlockI2TypeAccessor::get_q(origin_data, im * k + ik);
-                } else if (tensor->type == GGML_TYPE_I4) {
+                } else if (is_tmac_4bit_type(tensor->type)) {
                     v = BlockI4TypeAccessor::get_q(origin_data, im * k + ik);
                 } else if (tensor->type == GGML_TYPE_TQ1_0) {
                     v = BlockTQ10TypeAccessor::get_q(origin_data, im * k + ik);
@@ -834,9 +863,9 @@ static inline void ggml_tmac_transform_tensor(struct ggml_tensor * tensor, const
                     int idx = im * k + ik;
                     if (tensor->type == GGML_TYPE_Q4_0) {
                         scale = BlockQ40TypeAccessor::get_scale(origin_data, idx);
-                    } else if (tensor->type == GGML_TYPE_I2) {
+                    } else if (is_tmac_2bit_type(tensor->type)) {
                         scale = BlockI2TypeAccessor::get_scale(int_n_scales, idx, group_size);
-                    } else if (tensor->type == GGML_TYPE_I4) {
+                    } else if (is_tmac_4bit_type(tensor->type)) {
                         scale = BlockI4TypeAccessor::get_scale(int_n_scales, idx, group_size);
                     } else if (tensor->type == GGML_TYPE_TQ1_0) {
                         scale = BlockTQ10TypeAccessor::get_scale(origin_data, idx, group_size);
@@ -847,10 +876,10 @@ static inline void ggml_tmac_transform_tensor(struct ggml_tensor * tensor, const
                     }
 
                     tmac_float_type zero_point;
-                    if (tmac_model_meta->has_zero_point) {
-                        if (tensor->type == GGML_TYPE_I2) {
+                    if (get_type_has_zero_point(tensor->type)) {
+                        if (is_tmac_2bit_type(tensor->type)) {
                             zero_point = BlockI2TypeAccessor::get_zero_point(int_n_zero_points, idx, group_size);
-                        } else if (tensor->type == GGML_TYPE_I4) {
+                        } else if (is_tmac_4bit_type(tensor->type)) {
                             zero_point = BlockI4TypeAccessor::get_zero_point(int_n_zero_points, idx, group_size);
                         } else {
                             GGML_LOG_ERROR("Unsupported type for get_zero_point: %s\n", ggml_type_name(tensor->type));
@@ -864,7 +893,7 @@ static inline void ggml_tmac_transform_tensor(struct ggml_tensor * tensor, const
                     int new_ibm = (idx % nb0) / nb1;
                     int new_ik = (idx % nb1);
 
-                    if (tmac_model_meta->has_zero_point) {
+                    if (get_type_has_zero_point(tensor->type)) {
                         int new_isimd = new_ibm % simd_n_out;
                         int new_idx_outer = new_im * bm / bits * k / group_size / simd_n_out
                                           + new_ik * bm / bits / simd_n_out

@@ -1,6 +1,47 @@
 import json
 import numpy as np
+import os
+from pathlib import Path
+import sys
 from typing import Optional, Tuple
+
+
+if 'NO_LOCAL_GGUF' not in os.environ:
+    sys.path.insert(1, str(Path(__file__).parent / 'gguf-py'))
+import gguf
+
+
+def is_tmac_w2_ftype(ftype: gguf.LlamaFileType):
+    return ftype == gguf.LlamaFileType.MOSTLY_TMAC_BN_0 or \
+           ftype == gguf.LlamaFileType.MOSTLY_TMAC_W2G64_0 or \
+           ftype == gguf.LlamaFileType.MOSTLY_TMAC_W2G64_1 or \
+           ftype == gguf.LlamaFileType.MOSTLY_TMAC_W2G128_0 or \
+           ftype == gguf.LlamaFileType.MOSTLY_TMAC_W2G128_1
+
+def is_tmac_w4_ftype(ftype: gguf.LlamaFileType):
+    return ftype == gguf.LlamaFileType.MOSTLY_TMAC_W4G64_0 or \
+           ftype == gguf.LlamaFileType.MOSTLY_TMAC_W4G64_1 or \
+           ftype == gguf.LlamaFileType.MOSTLY_TMAC_W4G128_0 or \
+           ftype == gguf.LlamaFileType.MOSTLY_TMAC_W4G128_1
+
+def is_tmac_ftype(ftype: gguf.LlamaFileType):
+    return is_tmac_w2_ftype(ftype) or is_tmac_w4_ftype(ftype)
+
+def is_tmac_w2_dtype(dtype: gguf.GGMLQuantizationType):
+    return dtype == gguf.GGMLQuantizationType.TMAC_BN_0 or \
+           dtype == gguf.GGMLQuantizationType.TMAC_W2G64_0 or \
+           dtype == gguf.GGMLQuantizationType.TMAC_W2G64_1 or \
+           dtype == gguf.GGMLQuantizationType.TMAC_W2G128_0 or \
+           dtype == gguf.GGMLQuantizationType.TMAC_W2G128_1
+
+def is_tmac_w4_dtype(dtype: gguf.GGMLQuantizationType):
+    return dtype == gguf.GGMLQuantizationType.TMAC_W4G64_0 or \
+           dtype == gguf.GGMLQuantizationType.TMAC_W4G64_1 or \
+           dtype == gguf.GGMLQuantizationType.TMAC_W4G128_0 or \
+           dtype == gguf.GGMLQuantizationType.TMAC_W4G128_1
+
+def is_tmac_dtype(dtype: gguf.GGMLQuantizationType):
+    return is_tmac_w2_dtype(dtype) or is_tmac_w4_dtype(dtype)
 
 
 def parse_gptqv2(qweight: np.ndarray, scales: np.ndarray, qzeros: np.ndarray) -> Tuple:

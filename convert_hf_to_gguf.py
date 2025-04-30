@@ -292,12 +292,14 @@ class Model:
         if not self.enable_t_mac:
             return self.modify_tensors(data_torch, name, bid)
 
+        # read model meta info
+        from gguf.tmac_utils import get_quantization_config, preprocess_for_t_mac, is_tmac_ftype
+        quantization_config = get_quantization_config(self.dir_model)
         # bits = 0 means not quantized
         self._t_mac_bits = 0
+        self._t_mac_group_size = quantization_config["group_size"]
+        self._t_mac_sym = quantization_config["sym"]
         self._t_mac_raw_shape = None
-
-        from gguf.tmac_utils import get_quantization_config,preprocess_for_t_mac
-        quantization_config = get_quantization_config(self.dir_model)
 
         if quantization_config["quant_method"] == "gptq":  # AutoGPTQ/GPTQModel
             if name.endswith(".g_idx"):
@@ -318,24 +320,26 @@ class Model:
                 name = base_name + ".weight"
                 from gguf.tmac_utils import unpack_gptqv2
                 w, scales, zeros, bits, group_size = unpack_gptqv2(qweight, scales, qzeros, "gptqmodel" in quantization_config["quantizer"])
-                self._t_mac_bits = bits
-                self._t_mac_raw_shape = w.shape
                 if bits != quantization_config["bits"] or group_size != quantization_config["group_size"]:
                     logger.warning("Error while parsing weights for quantization_config: {}".format(quantization_config))
+                self._t_mac_bits = bits
+                self._t_mac_group_size = group_size
+                self._t_mac_raw_shape = w.shape
 
                 # For permutation in, e.g., LlamaModel
                 w = self.modify_tensors(torch.from_numpy(w), name, bid)[0][1].numpy()
                 scales = self.modify_tensors(torch.from_numpy(scales), name, bid)[0][1].numpy()
                 zeros = self.modify_tensors(torch.from_numpy(zeros), name, bid)[0][1].numpy()
 
-                if self.ftype == gguf.LlamaFileType.MOSTLY_INT_N:
-                    if quantization_config["sym"]:
+                if self._t_mac_bits > 0:
+                    if self._t_mac_sym:
                         if not np.allclose(zeros, np.zeros_like(zeros)):
                             logger.warning("Although the quantized model claimed to be symmetric, the weights are asymmetric")
                         else:
                             zeros = None
                     data_torch = torch.from_numpy(preprocess_for_t_mac(w, scales, zeros, bits=bits))
                 else:
+                    # TODO: Here should not be reached?
                     old_shape = w.shape
                     w = w.astype("float32").reshape(-1, group_size)
                     scales = scales.astype("float32").reshape(-1, 1)
@@ -361,10 +365,9 @@ class Model:
                 (name.endswith(".weight") and n_dims >= 2),
             ))
 
-            to_dtype = gguf.GGMLQuantizationType.F32
-
+            do_modify = False
             if self.ftype != gguf.LlamaFileType.ALL_F32 and extra_f16 and not extra_f32:
-                if self.ftype == gguf.LlamaFileType.MOSTLY_INT_N and any(self.match_model_tensor_name(new_name, key, bid) for key in [
+                if is_tmac_ftype(self.ftype) and any(self.match_model_tensor_name(new_name, key, bid) for key in [
                     gguf.MODEL_TENSOR.ATTN_Q,
                     gguf.MODEL_TENSOR.ATTN_K,
                     gguf.MODEL_TENSOR.ATTN_V,
@@ -374,23 +377,20 @@ class Model:
                     gguf.MODEL_TENSOR.FFN_DOWN,
                     gguf.MODEL_TENSOR.FFN_GATE,
                 ]):
-                    # I2 here is just a symbol for INT_N type.
-                    # TODO: check correctness of all I2
-                    to_dtype = gguf.GGMLQuantizationType.I2
+                    do_modify = True
                 else:
-                    to_dtype = gguf.GGMLQuantizationType.F16
+                    do_modify = False
 
-            if to_dtype == gguf.GGMLQuantizationType.I2:
+            if do_modify:
                 bits = quantization_config["bits"]
-                group_size = quantization_config["group_size"]
+                group_size = self._t_mac_group_size
                 w, scales, zeros = self._t_mac_quantize_tensor_bitdistiller(
                     LazyTorchTensor.to_eager(data_torch),
                     n_bit=bits,
                     zero_point=True,
                     q_group_size=group_size,
                 )
-
-                self._t_mac_bits = quantization_config["bits"]
+                self._t_mac_bits = bits
                 self._t_mac_raw_shape = w.shape
 
                 # For permutation in, e.g., LlamaModel
@@ -398,8 +398,8 @@ class Model:
                 scales = self.modify_tensors(torch.from_numpy(scales), name, bid)[0][1].numpy()
                 zeros = self.modify_tensors(torch.from_numpy(zeros), name, bid)[0][1].numpy()
 
-                if self.ftype == gguf.LlamaFileType.MOSTLY_INT_N:
-                    if quantization_config["sym"]:
+                if is_tmac_ftype(self.ftype):
+                    if self._t_mac_sym:
                         if not np.allclose(zeros, np.zeros_like(zeros)):
                             logger.warning("Although the quantized model claimed to be symmetric, the weights are asymmetric")
                         else:
@@ -553,17 +553,37 @@ class Model:
                         data_qtype = gguf.GGMLQuantizationType.F16
 
                 # If self._t_mac_bits > 0, the tensor is quantized by GPTQ
-                if self.enable_t_mac and self._t_mac_bits > 0 and self.ftype == gguf.LlamaFileType.MOSTLY_INT_N:
-                    if self._t_mac_bits == 1:
-                        data_qtype = gguf.GGMLQuantizationType.I1
-                    elif self._t_mac_bits == 2:
-                        data_qtype = gguf.GGMLQuantizationType.I2
-                    elif self._t_mac_bits == 3:
-                        data_qtype = gguf.GGMLQuantizationType.I3
-                    elif self._t_mac_bits == 4:
-                        data_qtype = gguf.GGMLQuantizationType.I4
+                from gguf.tmac_utils import is_tmac_ftype
+                if self.enable_t_mac and self._t_mac_bits > 0:
+                    if self._t_mac_bits == 2 and self._t_mac_group_size == -1:
+                        data_qtype = gguf.GGMLQuantizationType.TMAC_BN_0
+                        self.ftype = gguf.LlamaFileType.MOSTLY_TMAC_BN_0
+                    elif self._t_mac_bits == 2 and self._t_mac_group_size == 64 and self._t_mac_sym:
+                        data_qtype = gguf.GGMLQuantizationType.TMAC_W2G64_0
+                        self.ftype = gguf.LlamaFileType.MOSTLY_TMAC_W2G64_0
+                    elif self._t_mac_bits == 2 and self._t_mac_group_size == 64 and not self._t_mac_sym:
+                        data_qtype = gguf.GGMLQuantizationType.TMAC_W2G64_1
+                        self.ftype = gguf.LlamaFileType.MOSTLY_TMAC_W2G64_1
+                    elif self._t_mac_bits == 2 and self._t_mac_group_size == 128 and self._t_mac_sym:
+                        data_qtype = gguf.GGMLQuantizationType.TMAC_W2G128_0
+                        self.ftype = gguf.LlamaFileType.MOSTLY_TMAC_W2G128_0
+                    elif self._t_mac_bits == 2 and self._t_mac_group_size == 128 and not self._t_mac_sym:
+                        data_qtype = gguf.GGMLQuantizationType.TMAC_W2G128_1
+                        self.ftype = gguf.LlamaFileType.MOSTLY_TMAC_W2G128_1
+                    elif self._t_mac_bits == 4 and self._t_mac_group_size == 64 and self._t_mac_sym:
+                        data_qtype = gguf.GGMLQuantizationType.TMAC_W4G64_0
+                        self.ftype = gguf.LlamaFileType.MOSTLY_TMAC_W4G64_0
+                    elif self._t_mac_bits == 4 and self._t_mac_group_size == 64 and not self._t_mac_sym:
+                        data_qtype = gguf.GGMLQuantizationType.TMAC_W4G64_1
+                        self.ftype = gguf.LlamaFileType.MOSTLY_TMAC_W4G64_1
+                    elif self._t_mac_bits == 4 and self._t_mac_group_size == 128 and self._t_mac_sym:
+                        data_qtype = gguf.GGMLQuantizationType.TMAC_W4G128_0
+                        self.ftype = gguf.LlamaFileType.MOSTLY_TMAC_W4G128_0
+                    elif self._t_mac_bits == 4 and self._t_mac_group_size == 128 and not self._t_mac_sym:
+                        data_qtype = gguf.GGMLQuantizationType.TMAC_W4G128_1
+                        self.ftype = gguf.LlamaFileType.MOSTLY_TMAC_W4G128_1
                     else:
-                        raise ValueError(f"Unsupported number of bits: {self._t_mac_bits}")
+                        raise ValueError(f"Unsupported number of (bits, group_size, sym): ({self._t_mac_bits}, {self._t_mac_group_size}, {self._t_mac_sym})")
 
                 # No override (data_qtype is False), or wants to be quantized (data_qtype is True)
                 if isinstance(data_qtype, bool):
@@ -579,8 +599,8 @@ class Model:
                         data_qtype = gguf.GGMLQuantizationType.TQ1_0
                     elif self.ftype == gguf.LlamaFileType.MOSTLY_TQ2_0:
                         data_qtype = gguf.GGMLQuantizationType.TQ2_0
-                    elif self.ftype == gguf.LlamaFileType.MOSTLY_INT_N:
-                        # If the tensor is successfully quantized, data_qtype should be I1/2/3/4
+                    elif is_tmac_ftype(self.ftype):
+                        # If the tensor is successfully quantized, data_qtype should be TMAC_*
                         # If data_qtype is still bool, then the tensor should not be quantized
                         # In practice, this tensor is `output.weight` for GPTQ models
                         # TODO: Consider quantizing it?
@@ -602,9 +622,9 @@ class Model:
                 shape_str = f"{{{', '.join(str(n) for n in reversed(shape))}}}"
 
                 # n_dims is implicit in the shape
-                logger.info(f"{f'%-{max_name_len}s' % f'{new_name},'} {old_dtype} --> {data_qtype.name}, shape = {shape_str}")
+                logger.info(f"{f'%-{max_name_len}s' % f'{new_name},'} {old_dtype} --> {data_qtype.name}, shape = {shape_str}, data = {data.shape}")
 
-                raw_shape = gguf.quant_shape_to_byte_shape(self._t_mac_raw_shape, data_qtype) if self.ftype == gguf.LlamaFileType.MOSTLY_INT_N and self._t_mac_raw_shape else None
+                raw_shape = gguf.quant_shape_to_byte_shape(self._t_mac_raw_shape, data_qtype) if is_tmac_ftype(self.ftype) and self._t_mac_raw_shape else None
                 self.gguf_writer.add_tensor(new_name, data, raw_dtype=data_qtype, raw_shape=raw_shape)
 
     def set_type(self):
@@ -2264,9 +2284,11 @@ class BitnetModel(Model):
             gguf.MODEL_TENSOR.FFN_DOWN,
             gguf.MODEL_TENSOR.FFN_GATE,
         ]):
+            # TODO: apply latest updates
             # transform weight into 1/0/-1 (in fp32)
             data_torch = self.weight_quant(data_torch)
-            if self.enable_t_mac and self.ftype == gguf.LlamaFileType.MOSTLY_INT_N:
+            from gguf.tmac_utils import is_tmac_ftype
+            if self.enable_t_mac and is_tmac_ftype(self.ftype):
                 # transform weight into T-MAC INT_N format
                 from gguf.tmac_utils import preprocess_for_t_mac
                 data = LazyTorchTensor.to_eager(data_torch).numpy()
@@ -5806,7 +5828,15 @@ def main() -> None:
         "q8_0": gguf.LlamaFileType.MOSTLY_Q8_0,
         "tq1_0": gguf.LlamaFileType.MOSTLY_TQ1_0,
         "tq2_0": gguf.LlamaFileType.MOSTLY_TQ2_0,
-        "int_n": gguf.LlamaFileType.MOSTLY_INT_N,
+        "tmac_bn_0": gguf.LlamaFileType.MOSTLY_TMAC_BN_0,
+        "tmac_w2g64_0": gguf.LlamaFileType.MOSTLY_TMAC_W2G64_0,
+        "tmac_w2g64_1": gguf.LlamaFileType.MOSTLY_TMAC_W2G64_1,
+        "tmac_w2g128_0": gguf.LlamaFileType.MOSTLY_TMAC_W2G128_0,
+        "tmac_w2g128_1": gguf.LlamaFileType.MOSTLY_TMAC_W2G128_1,
+        "tmac_w4g64_0": gguf.LlamaFileType.MOSTLY_TMAC_W4G64_0,
+        "tmac_w4g64_1": gguf.LlamaFileType.MOSTLY_TMAC_W4G64_1,
+        "tmac_w4g128_0": gguf.LlamaFileType.MOSTLY_TMAC_W4G128_0,
+        "tmac_w4g128_1": gguf.LlamaFileType.MOSTLY_TMAC_W4G128_1,
         "auto": gguf.LlamaFileType.GUESSED,
     }
 

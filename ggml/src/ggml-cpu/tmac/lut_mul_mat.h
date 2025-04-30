@@ -48,7 +48,7 @@ extern "C" {
 
 void tmac_init(void);
 
-bool load_and_parse_tmac_meta(const char * tmac_meta_fname);
+bool is_tmac_type(enum ggml_type type);
 
 bool is_type_supported(enum ggml_type type);
 

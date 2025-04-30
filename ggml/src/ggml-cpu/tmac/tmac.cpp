@@ -48,28 +48,9 @@ class extra_buffer_type : ggml::cpu::extra_buffer_type {
 
 }  // namespace ggml::cpu::tmac
 
-
-bool ggml_tmac_init(const char * fname) {
+void ggml_tmac_init() {
     tmac_init();
-
-    std::string tmac_meta_fname(fname);
-    std::string new_fname_part("tmac_meta.json");
-    std::replace(tmac_meta_fname.begin(), tmac_meta_fname.end(), '\\', '/');
-    size_t lastSlashPos = tmac_meta_fname.find_last_of('/');
-    if (lastSlashPos == std::string::npos) {
-        tmac_meta_fname = new_fname_part;  // Only the new file name, no directory to append
-    } else {
-        tmac_meta_fname = tmac_meta_fname.substr(0, lastSlashPos).append("/" + new_fname_part);
-    }
-
-    GGML_LOG_INFO("%s: loading TMAC meta data from %s\n", __func__, tmac_meta_fname.c_str());
-    if (!load_and_parse_tmac_meta(tmac_meta_fname.c_str())) {
-        GGML_LOG_WARN("%s: failed to load TMAC meta data from %s. This has no effect on non-TMAC model running, but will lead to errors on T-MAC models.\n", __func__, tmac_meta_fname.c_str());
-        return false;
-    }
-    return true;
 }
-
 
 static void ggml_backend_tmac_buffer_free_buffer(ggml_backend_buffer_t buffer) {
     ggml_aligned_free(buffer->context, buffer->size);
@@ -154,10 +135,7 @@ static size_t ggml_backend_tmac_buffer_type_get_alignment(ggml_backend_buffer_ty
 
 static size_t ggml_backend_tmac_buffer_type_get_alloc_size(ggml_backend_buffer_type_t buft, const struct ggml_tensor * tensor) {
     // T-MAC version of ggml_nbytes
-    if(tensor->type == GGML_TYPE_I1 ||
-        tensor->type == GGML_TYPE_I2 ||
-        tensor->type == GGML_TYPE_I3 ||
-        tensor->type == GGML_TYPE_I4){
+    if(is_tmac_type(tensor->type)){
          return ggml_tmac_get_nbytes(tensor);
     }
   
